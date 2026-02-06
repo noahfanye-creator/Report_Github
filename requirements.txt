@@ -1,0 +1,14 @@
+pandas>=1.5.0
+numpy>=1.23.0
+akshare>=1.10.0
+yfinance>=0.2.0
+tushare>=1.2.0
+baostock>=0.8.0
+TA-Lib>=0.4.25
+mplfinance>=0.12.9b7
+matplotlib>=3.6.0
+reportlab>=4.0.0
+scipy>=1.9.0
+pytz>=2022.7
+holidays>=0.25
+pyyaml>=6.0

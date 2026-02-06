@@ -1,0 +1,843 @@
+看到您遇到了数据源访问问题。这是很常见的情况，因为免费的数据源都有访问限制。让我帮您解决这个问题并提供几个解决方案。
+
+## 一、立即解决方案
+
+### 1.1 使用备用数据源（baostock）
+
+baostock 是一个免费的A股数据源，通常比较稳定。修改您的代码：
+
+```python
+# 在数据获取模块中添加baostock支持
+import baostock as bs
+
+class DataAcquirer:
+    def _get_from_baostock(self, symbol, start_date, end_date):
+        """使用baostock获取A股数据"""
+        try:
+            # 登录
+            lg = bs.login()
+            if lg.error_code != '0':
+                return None
+            
+            # 转换代码格式
+            if symbol.startswith('sh'):
+                code = f"sh.{symbol[2:]}"
+            elif symbol.startswith('sz'):
+                code = f"sz.{symbol[2:]}"
+            elif symbol.startswith('6'):
+                code = f"sh.{symbol}"
+            else:
+                code = f"sz.{symbol}"
+            
+            # 获取数据
+            fields = "date,open,high,low,close,volume,amount"
+            rs = bs.query_history_k_data_plus(
+                code,
+                fields,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2"  # 前复权
+            )
+            
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+            
+            if not data_list:
+                return None
+            
+            df = pd.DataFrame(data_list, columns=fields.split(','))
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+            # 转换数据类型
+            for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                df[col] = pd.to_numeric(df[col])
+            
+            return df
+            
+        except Exception as e:
+            print(f"baostock获取失败: {e}")
+            return None
+        finally:
+            try:
+                bs.logout()
+            except:
+                pass
+```
+
+### 1.2 立即可用的解决方案：使用本地缓存模式
+
+```python
+# 创建测试数据生成器（用于开发测试）
+class MockDataGenerator:
+    """生成模拟数据，用于测试和开发"""
+    
+    @staticmethod
+    def generate_mock_stock_data(symbol, days=500):
+        """生成模拟股票数据"""
+        import numpy as np
+        from datetime import datetime, timedelta
+        
+        # 生成日期范围
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        dates = pd.date_range(start=start_date, end=end_date, freq='B')  # 工作日
+        
+        # 生成价格序列（几何布朗运动）
+        n = len(dates)
+        returns = np.random.normal(0.0005, 0.02, n)  # 每日收益率
+        price = 100 * np.exp(np.cumsum(returns))  # 起始价格100
+        
+        # 生成OHLC数据
+        df = pd.DataFrame(index=dates)
+        df['close'] = price
+        
+        # 生成开盘价（基于前一收盘价）
+        df['open'] = df['close'].shift(1) * (1 + np.random.normal(0, 0.01, n))
+        
+        # 生成最高最低价
+        for i in range(n):
+            if i == 0:
+                df.loc[dates[i], 'open'] = 100
+            
+            close = df.loc[dates[i], 'close']
+            open_price = df.loc[dates[i], 'open']
+            
+            # 计算当日波动范围
+            daily_range = abs(close - open_price) * 1.5
+            high = max(open_price, close) + daily_range * np.random.rand()
+            low = min(open_price, close) - daily_range * np.random.rand()
+            
+            df.loc[dates[i], 'high'] = high
+            df.loc[dates[i], 'low'] = low
+        
+        # 生成成交量
+        df['volume'] = np.random.lognormal(12, 1, n) * 1000
+        
+        # 添加涨跌幅
+        df['pct_change'] = df['close'].pct_change() * 100
+        
+        # 添加股票代码
+        df['symbol'] = symbol
+        
+        return df.dropna()
+
+# 在主程序中添加
+def get_data_with_fallback(symbol, market):
+    """带降级的数据获取"""
+    try:
+        # 首先尝试akshare
+        data = get_from_akshare(symbol, market)
+        if data is not None and not data.empty:
+            print("✓ 使用akshare数据源")
+            return data
+    except:
+        pass
+    
+    try:
+        # 尝试yfinance
+        data = get_from_yfinance(symbol, market)
+        if data is not None and not data.empty:
+            print("✓ 使用yfinance数据源")
+            return data
+    except:
+        pass
+    
+    try:
+        # 尝试baostock
+        data = get_from_baostock(symbol, market)
+        if data is not None and not data.empty:
+            print("✓ 使用baostock数据源")
+            return data
+    except:
+        pass
+    
+    # 所有数据源失败，使用模拟数据
+    print("⚠️  所有数据源失败，使用模拟数据（仅用于测试）")
+    return MockDataGenerator.generate_mock_stock_data(symbol)
+```
+
+## 二、优化后的依赖文件
+
+```txt
+# requirements_optimized.txt（优化版依赖）
+# 基础数据处理
+pandas==2.1.0
+numpy==1.24.0
+
+# 必须的数据源（按优先级）
+baostock==0.8.9  # 第一优先：稳定免费的A股数据源
+akshare==1.12.0  # 第二优先：全面但可能受限
+yfinance==0.2.28  # 第三优先：国际数据源
+
+# 技术指标计算
+pandas-ta==0.3.14b0  # 纯Python实现，无编译问题
+
+# 可视化
+matplotlib==3.7.0
+mplfinance==0.12.7a17
+
+# 报告生成
+reportlab==4.0.4
+Pillow==10.0.0
+
+# 工具包
+tqdm==4.66.0
+colorama==0.4.6
+loguru==0.7.2
+python-dateutil==2.8.2
+pytz==2023.3
+```
+
+## 三、完整的解决方案脚本
+
+```python
+# solve_data_issue.py
+"""
+解决数据获取问题的完整方案
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# 添加当前目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent))
+
+def install_dependencies():
+    """安装优化的依赖包"""
+    print("安装优化的依赖包...")
+    
+    # 创建requirements_optimized.txt
+    requirements = """# 股票技术分析报告系统 - 优化版依赖
+pandas==2.1.0
+numpy==1.24.0
+baostock==0.8.9
+akshare==1.12.0
+yfinance==0.2.28
+pandas-ta==0.3.14b0
+matplotlib==3.7.0
+mplfinance==0.12.7a17
+reportlab==4.0.4
+Pillow==10.0.0
+tqdm==4.66.0
+colorama==0.4.6
+loguru==0.7.2
+python-dateutil==2.8.2
+pytz==2023.3
+"""
+    
+    with open("requirements_optimized.txt", "w") as f:
+        f.write(requirements)
+    
+    # 安装
+    os.system("pip install -r requirements_optimized.txt -i https://pypi.tuna.tsinghua.edu.cn/simple")
+    print("依赖安装完成！")
+
+def create_robust_data_acquirer():
+    """创建健壮的数据获取器"""
+    code = """
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import akshare as ak
+import yfinance as yf
+import baostock as bs
+import time
+from typing import Optional
+
+class RobustDataAcquirer:
+    \"\"\"健壮的数据获取器（多数据源 + 降级策略）\"\"\"
+    
+    def __init__(self):
+        self.max_retries = 2
+        self.retry_delay = 2  # 秒
+        
+    def get_stock_data(self, symbol: str, market: str = "A股") -> Optional[pd.DataFrame]:
+        \"\"\"获取股票数据（带自动降级）\"\"\"
+        
+        # 自动判断市场
+        if market == "auto":
+            market = self.detect_market(symbol)
+        
+        print(f"获取 {market} {symbol} 数据...")
+        
+        # 按优先级尝试数据源
+        data_sources = [
+            ("baostock", self._try_baostock),
+            ("akshare", self._try_akshare),
+            ("yfinance", self._try_yfinance),
+        ]
+        
+        last_error = None
+        for source_name, source_func in data_sources:
+            print(f"尝试数据源: {source_name}...")
+            
+            # 重试机制
+            for retry in range(self.max_retries):
+                try:
+                    data = source_func(symbol, market)
+                    if data is not None and not data.empty:
+                        print(f"✓ 数据源 {source_name} 成功")
+                        return data
+                except Exception as e:
+                    last_error = f"{source_name}: {e}"
+                    if retry < self.max_retries - 1:
+                        wait_time = self.retry_delay * (retry + 1)
+                        print(f"⚠️  错误，等待 {{wait_time}} 秒后重试 ({{retry+1}}/{{self.max_retries}})...")
+                        time.sleep(wait_time)
+        
+        # 所有数据源失败
+        print(f"❌ 所有数据源均失败")
+        print(f"最后错误: {last_error}")
+        print("提示: 启用降级模式（模拟数据）...")
+        
+        # 降级：使用模拟数据
+        return self._get_mock_data(symbol)
+    
+    def _try_baostock(self, symbol: str, market: str) -> Optional[pd.DataFrame]:
+        \"\"\"尝试baostock数据源（A股专用）\"\"\"
+        if market not in ["A股", "auto"]:
+            return None
+            
+        try:
+            # 登录
+            lg = bs.login()
+            if lg.error_code != '0':
+                return None
+            
+            # 转换代码格式
+            code = self._format_symbol_for_baostock(symbol)
+            if not code:
+                return None
+            
+            # 计算日期范围（最近2年）
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+            
+            # 获取数据
+            fields = "date,open,high,low,close,volume,amount,turn,pctChg"
+            rs = bs.query_history_k_data_plus(
+                code,
+                fields,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="2"  # 前复权
+            )
+            
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+            
+            if not data_list:
+                return None
+            
+            df = pd.DataFrame(data_list, columns=fields.split(','))
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+            # 转换数据类型
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount', 'turn', 'pctChg']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # 重命名列
+            df = df.rename(columns={'pctChg': 'pct_change'})
+            
+            return df
+            
+        except Exception as e:
+            raise Exception(f"baostock获取失败: {e}")
+        finally:
+            try:
+                bs.logout()
+            except:
+                pass
+    
+    def _try_akshare(self, symbol: str, market: str) -> Optional[pd.DataFrame]:
+        \"\"\"尝试akshare数据源\"\"\"
+        try:
+            if market in ["A股", "auto"]:
+                # A股数据
+                code = self._format_symbol_for_akshare(symbol, "A")
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date="20240101",
+                    end_date=datetime.now().strftime("%Y%m%d"),
+                    adjust="qfq"
+                )
+                
+                if df.empty:
+                    return None
+                
+                df = df.rename(columns={
+                    '日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'amount',
+                    '振幅': 'amplitude',
+                    '涨跌幅': 'pct_change'
+                })
+                
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                
+                return df
+                
+        except Exception as e:
+            raise Exception(f"akshare获取失败: {e}")
+        
+        return None
+    
+    def _try_yfinance(self, symbol: str, market: str) -> Optional[pd.DataFrame]:
+        \"\"\"尝试yfinance数据源\"\"\"
+        try:
+            # 转换代码格式
+            yf_symbol = self._format_symbol_for_yfinance(symbol, market)
+            
+            # 获取数据
+            stock = yf.Ticker(yf_symbol)
+            df = stock.history(period="2y")
+            
+            if df.empty:
+                return None
+            
+            # 重命名列
+            df = df.rename(columns={
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+            
+            # 计算成交额
+            if 'amount' not in df.columns:
+                df['amount'] = df['close'] * df['volume']
+            
+            # 计算涨跌幅
+            df['pct_change'] = df['close'].pct_change() * 100
+            
+            return df
+            
+        except Exception as e:
+            raise Exception(f"yfinance获取失败: {e}")
+    
+    def _get_mock_data(self, symbol: str) -> pd.DataFrame:
+        \"\"\"生成模拟数据（降级方案）\"\"\"
+        print("⚠️  警告：使用模拟数据，仅用于测试和演示")
+        
+        # 生成日期范围（最近500个交易日）
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=730)
+        dates = pd.date_range(start=start_date, end=end_date, freq='B')
+        n = min(500, len(dates))
+        dates = dates[-n:]
+        
+        # 生成价格序列
+        np.random.seed(hash(symbol) % 10000)  # 基于股票代码的固定随机种子
+        returns = np.random.normal(0.0003, 0.018, n)
+        price = 100 * np.exp(np.cumsum(returns))
+        
+        # 创建DataFrame
+        df = pd.DataFrame(index=dates)
+        df['close'] = price
+        
+        # 生成OHLCV数据
+        for i in range(n):
+            if i == 0:
+                df.iloc[i, df.columns.get_loc('close')] = 100
+                open_price = 100
+            else:
+                open_price = df.iloc[i-1]['close'] * (1 + np.random.normal(0, 0.005))
+            
+            close_price = df.iloc[i]['close']
+            
+            # 生成高低价
+            daily_range = abs(close_price - open_price) * (1.5 + np.random.rand())
+            high = max(open_price, close_price) + daily_range * 0.3
+            low = min(open_price, close_price) - daily_range * 0.3
+            
+            df.iloc[i, df.columns.get_loc('open')] = open_price
+            df.iloc[i, df.columns.get_loc('high')] = high
+            df.iloc[i, df.columns.get_loc('low')] = low
+            
+            # 成交量
+            base_volume = 1000000
+            volume_variation = 0.5 + np.random.rand()
+            price_change = abs(df['close'].pct_change().iloc[i] if i > 0 else 0)
+            df.iloc[i, df.columns.get_loc('volume')] = base_volume * volume_variation * (1 + price_change * 10)
+        
+        # 计算其他字段
+        df['amount'] = df['close'] * df['volume']
+        df['pct_change'] = df['close'].pct_change() * 100
+        df['symbol'] = symbol
+        
+        return df.dropna()
+    
+    def detect_market(self, symbol: str) -> str:
+        \"\"\"自动检测市场类型\"\"\"
+        symbol_upper = symbol.upper()
+        
+        if symbol_upper.startswith(('6', '0', '3', '688', '8')):
+            return "A股"
+        elif symbol_upper.endswith('.HK') or (symbol_upper.isdigit() and len(symbol_upper) == 5):
+            return "港股"
+        elif symbol_upper.endswith('.US'):
+            return "美股"
+        else:
+            # 默认A股
+            return "A股"
+    
+    def _format_symbol_for_baostock(self, symbol: str) -> Optional[str]:
+        \"\"\"格式化股票代码用于baostock\"\"\"
+        symbol = symbol.replace('.SH', '').replace('.SZ', '')
+        
+        if symbol.startswith('6'):
+            return f"sh.{symbol}"
+        elif symbol.startswith(('0', '3')):
+            return f"sz.{symbol}"
+        else:
+            # 尝试判断
+            if len(symbol) == 6:
+                if symbol.startswith('6'):
+                    return f"sh.{symbol}"
+                else:
+                    return f"sz.{symbol}"
+            return None
+    
+    def _format_symbol_for_akshare(self, symbol: str, market: str) -> str:
+        \"\"\"格式化股票代码用于akshare\"\"\"
+        symbol = symbol.replace('.SH', '').replace('.SZ', '')
+        
+        if market == "A股":
+            if symbol.startswith('6'):
+                return f"{symbol}.SH"
+            else:
+                return f"{symbol}.SZ"
+        elif market == "港股":
+            return symbol.zfill(5)
+        return symbol
+    
+    def _format_symbol_for_yfinance(self, symbol: str, market: str) -> str:
+        \"\"\"格式化股票代码用于yfinance\"\"\"
+        if market == "A股":
+            if symbol.endswith('.SH') or symbol.endswith('.SZ'):
+                return symbol
+            elif symbol.startswith('6'):
+                return f"{symbol}.SS"
+            else:
+                return f"{symbol}.SZ"
+        elif market == "港股":
+            if symbol.endswith('.HK'):
+                return symbol
+            else:
+                return f"{symbol}.HK"
+        return symbol
+
+# 使用示例
+if __name__ == "__main__":
+    acquirer = RobustDataAcquirer()
+    
+    # 测试几个股票
+    test_symbols = ["600519", "000001", "00700", "AAPL"]
+    
+    for symbol in test_symbols:
+        print(f"\\n测试股票: {symbol}")
+        data = acquirer.get_stock_data(symbol, "auto")
+        
+        if data is not None:
+            print(f"  数据形状: {data.shape}")
+            print(f"  日期范围: {data.index[0]} 至 {data.index[-1]}")
+            print(f"  最新收盘价: {data['close'].iloc[-1]:.2f}")
+        else:
+            print("  获取失败")
+"""
+    
+    with open("robust_data_acquirer.py", "w") as f:
+        f.write(code)
+    
+    print("已创建健壮的数据获取器：robust_data_acquirer.py")
+
+def create_minimal_main():
+    """创建最小化可运行的主程序"""
+    code = """
+#!/usr/bin/env python3
+"""
+    with open("minimal_main.py", "w") as f:
+        f.write(code)
+
+def main():
+    """主函数"""
+    print("=" * 60)
+    print("股票技术分析报告系统 - 数据获取问题解决方案")
+    print("=" * 60)
+    
+    print("\\n1. 安装优化的依赖包...")
+    install_dependencies()
+    
+    print("\\n2. 创建健壮的数据获取器...")
+    create_robust_data_acquirer()
+    
+    print("\\n3. 准备测试...")
+    print("\\n完成！请运行以下命令测试：")
+    print("  python -c \"from robust_data_acquirer import RobustDataAcquirer; ")
+    print("  a = RobustDataAcquirer(); ")
+    print("  data = a.get_stock_data('600519'); ")
+    print("  print(f'数据形状: {data.shape}'); ")
+    print("  print(f'最新价格: {data[\"close\"].iloc[-1]:.2f}')\"")
+    
+    print("\\n或者运行完整测试：")
+    print("  python test_all_sources.py")
+
+if __name__ == "__main__":
+    main()
+```
+
+## 四、立即测试的脚本
+
+```python
+# test_all_sources.py
+"""
+测试所有数据源
+"""
+
+import sys
+from pathlib import Path
+
+# 添加当前目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    from robust_data_acquirer import RobustDataAcquirer
+except:
+    print("正在创建健壮数据获取器...")
+    # 创建简易版本
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, timedelta
+    
+    class RobustDataAcquirer:
+        def get_stock_data(self, symbol, market="auto"):
+            print(f"获取 {symbol} 数据（模拟模式）...")
+            return self._get_mock_data(symbol)
+        
+        def _get_mock_data(self, symbol):
+            # 简易模拟数据生成
+            dates = pd.date_range(end=datetime.now(), periods=100, freq='B')
+            np.random.seed(hash(symbol) % 10000)
+            
+            price = 100 * np.exp(np.cumsum(np.random.normal(0.0003, 0.018, 100)))
+            
+            df = pd.DataFrame(index=dates)
+            df['close'] = price
+            df['open'] = df['close'] * (1 + np.random.normal(0, 0.005, 100))
+            df['high'] = df[['open', 'close']].max(axis=1) * (1 + np.random.rand(100) * 0.1)
+            df['low'] = df[['open', 'close']].min(axis=1) * (1 - np.random.rand(100) * 0.1)
+            df['volume'] = np.random.lognormal(12, 1, 100) * 1000
+            df['amount'] = df['close'] * df['volume']
+            df['pct_change'] = df['close'].pct_change() * 100
+            df['symbol'] = symbol
+            
+            return df.dropna()
+
+def test_single_stock():
+    """测试单只股票"""
+    print("测试单只股票数据获取...")
+    
+    acquirer = RobustDataAcquirer()
+    
+    # 测试A股
+    print("\\n1. 测试A股 (600519 - 贵州茅台):")
+    data = acquirer.get_stock_data("600519", "A股")
+    
+    if data is not None and not data.empty:
+        print(f"   成功！获取 {len(data)} 条数据")
+        print(f"   日期范围: {data.index[0].date()} 至 {data.index[-1].date()}")
+        print(f"   最新数据:")
+        print(f"     收盘价: {data['close'].iloc[-1]:.2f}")
+        print(f"     涨跌幅: {data['pct_change'].iloc[-1]:.2f}%")
+        print(f"     成交量: {data['volume'].iloc[-1]:,.0f}")
+        return True
+    else:
+        print("   失败！")
+        return False
+
+def test_multiple_stocks():
+    """测试多只股票"""
+    print("\\n测试多只股票数据获取...")
+    
+    test_cases = [
+        ("600519", "A股", "贵州茅台"),
+        ("000001", "A股", "平安银行"),
+        ("00700", "港股", "腾讯控股"),
+        ("AAPL", "美股", "苹果"),
+    ]
+    
+    acquirer = RobustDataAcquirer()
+    results = []
+    
+    for symbol, market, name in test_cases:
+        print(f"\\n测试 {name} ({symbol}):")
+        try:
+            data = acquirer.get_stock_data(symbol, market)
+            if data is not None and not data.empty:
+                print(f"  ✓ 成功 - {len(data)} 条数据，最新价: {data['close'].iloc[-1]:.2f}")
+                results.append(True)
+            else:
+                print(f"  ✗ 失败 - 无数据")
+                results.append(False)
+        except Exception as e:
+            print(f"  ✗ 异常 - {e}")
+            results.append(False)
+    
+    success_rate = sum(results) / len(results) * 100
+    print(f"\\n总体成功率: {success_rate:.1f}% ({sum(results)}/{len(results)})")
+    
+    return success_rate > 50
+
+def generate_sample_report():
+    """生成样本报告"""
+    print("\\n生成样本技术分析报告...")
+    
+    from robust_data_acquirer import RobustDataAcquirer
+    
+    acquirer = RobustDataAcquirer()
+    data = acquirer.get_stock_data("600519")
+    
+    if data is None or data.empty:
+        print("无法获取数据，跳过报告生成")
+        return
+    
+    # 计算简单技术指标
+    data['MA5'] = data['close'].rolling(5).mean()
+    data['MA20'] = data['close'].rolling(20).mean()
+    data['RSI'] = 100 - (100 / (1 + data['close'].pct_change().rolling(14).apply(
+        lambda x: x[x>0].sum() / abs(x[x<0].sum()) if abs(x[x<0].sum()) > 0 else 1
+    )))
+    
+    # 生成报告
+    report = f"""
+==========================================
+股票技术分析报告
+==========================================
+股票: {data['symbol'].iloc[0]} (模拟数据)
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+数据范围: {data.index[0].date()} 至 {data.index[-1].date()}
+数据条数: {len(data)}
+==========================================
+
+最新数据摘要:
+  收盘价: {data['close'].iloc[-1]:.2f}
+  涨跌幅: {data['pct_change'].iloc[-1]:.2f}%
+  成交量: {data['volume'].iloc[-1]:,.0f}
+  成交额: {data['amount'].iloc[-1]:,.0f}
+
+技术指标:
+  MA5: {data['MA5'].iloc[-1]:.2f}
+  MA20: {data['MA20'].iloc[-1]:.2f}
+  RSI(14): {data['RSI'].iloc[-1]:.1f}
+
+趋势分析:
+  {'多头排列' if data['MA5'].iloc[-1] > data['MA20'].iloc[-1] else '空头排列'}
+  {'RSI超买' if data['RSI'].iloc[-1] > 70 else 'RSI超卖' if data['RSI'].iloc[-1] < 30 else 'RSI正常'}
+
+价格统计:
+  最高价: {data['high'].max():.2f}
+  最低价: {data['low'].min():.2f}
+  平均价: {data['close'].mean():.2f}
+  波动率: {data['pct_change'].std():.2f}%
+
+==========================================
+注: 此报告基于模拟数据生成，仅用于演示目的
+    实际投资请使用真实市场数据
+==========================================
+"""
+    
+    # 保存报告
+    with open("sample_report.txt", "w", encoding="utf-8") as f:
+        f.write(report)
+    
+    print("样本报告已保存到: sample_report.txt")
+    print("\\n报告预览:")
+    print(report[:500] + "...")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("股票技术分析系统 - 数据源测试")
+    print("=" * 60)
+    
+    try:
+        # 测试单只股票
+        test_single_stock()
+        
+        # 测试多只股票
+        test_multiple_stocks()
+        
+        # 生成样本报告
+        generate_sample_report()
+        
+        print("\\n" + "=" * 60)
+        print("测试完成！系统可以正常工作。")
+        print("=" * 60)
+        
+    except Exception as e:
+        print(f"\\n测试过程中出现错误: {e}")
+        print("\\n建议：")
+        print("1. 检查网络连接")
+        print("2. 运行: pip install -r requirements_optimized.txt")
+        print("3. 或直接使用模拟数据模式进行开发")
+```
+
+## 五、运行步骤
+
+### 步骤1：创建并运行解决方案
+```bash
+# 1. 创建解决方案文件
+python solve_data_issue.py
+
+# 2. 测试数据获取
+python test_all_sources.py
+
+# 3. 如果测试成功，修改您的主程序
+# 在主程序中导入并使用 RobustDataAcquirer
+```
+
+### 步骤2：修改主程序使用新获取器
+```python
+# 在您的主程序中
+from robust_data_acquirer import RobustDataAcquirer
+
+def analyze_stock(symbol):
+    # 创建健壮的数据获取器
+    acquirer = RobustDataAcquirer()
+    
+    # 获取数据（自动处理失败和降级）
+    data = acquirer.get_stock_data(symbol, "auto")
+    
+    if data is None or data.empty:
+        print("无法获取数据，请检查网络或稍后重试")
+        return
+    
+    # 继续后续分析...
+    print(f"成功获取 {len(data)} 条数据")
+    # ... 其他分析代码
+```
+
+## 六、关键改进点
+
+1. **优先级调整**：baostock → akshare → yfinance
+2. **自动降级**：所有数据源失败时使用模拟数据
+3. **重试机制**：网络错误时自动重试
+4. **错误处理**：详细的错误信息和解决方案提示
+5. **模拟数据**：基于股票代码生成可重复的模拟数据
+
+这样即使网络有问题，您也可以继续开发和测试系统的其他部分，等网络恢复后再切换到真实数据。

@@ -1,0 +1,63 @@
+stock_analysis_system/
+│
+├── config/                          # 配置文件目录
+│   ├── __init__.py
+│   ├── config.yaml                  # 主配置文件
+│   ├── market_rules.yaml            # 市场交易规则配置
+│   └── holidays.yaml                # 各市场节假日配置
+│
+├── data_sources/                    # 数据源模块
+│   ├── __init__.py
+│   ├── base_data_source.py          # 数据源基类
+│   ├── akshare_source.py            # AKShare数据源
+│   ├── yfinance_source.py           # Yahoo Finance数据源
+│   ├── tushare_source.py            # Tushare数据源
+│   └── data_source_factory.py       # 数据源工厂
+│
+├── market_detector/                 # 市场检测模块
+│   ├── __init__.py
+│   ├── market_detector.py           # 市场检测器
+│   └── trading_time.py              # 交易时间判断
+│
+├── indicators/                      # 技术指标模块
+│   ├── __init__.py
+│   ├── base_indicator.py            # 指标基类
+│   ├── trend_indicators.py          # 趋势指标
+│   ├── momentum_indicators.py       # 动量指标
+│   ├── volatility_indicators.py     # 波动率指标
+│   ├── volume_indicators.py         # 成交量指标
+│   ├── hk_specific_indicators.py    # 港股特有指标
+│   └── indicator_calculator.py      # 指标计算器
+│
+├── visualizer/                      # 可视化模块
+│   ├── __init__.py
+│   ├── chart_templates.py           # 图表模板
+│   ├── realtime_chart.py            # 实时图表
+│   ├── closing_chart.py             # 收盘图表
+│   └── chart_utils.py               # 图表工具
+│
+├── report_generator/                # 报告生成模块
+│   ├── __init__.py
+│   ├── base_report.py               # 报告基类
+│   ├── realtime_report.py           # 实时报告
+│   ├── closing_report.py            # 收盘报告
+│   ├── pdf_generator.py             # PDF生成器
+│   └── json_generator.py            # JSON生成器
+│
+├── utils/                           # 工具模块
+│   ├── __init__.py
+│   ├── data_cleaner.py              # 数据清洗
+│   ├── data_validator.py            # 数据验证
+│   ├── date_utils.py                # 日期工具
+│   ├── file_utils.py                # 文件工具
+│   └── logger.py                    # 日志工具
+│
+├── outputs/                         # 输出目录（自动生成）
+│   ├── reports/                     # PDF报告
+│   ├── charts/                      # 图表文件
+│   ├── json_data/                   # JSON数据
+│   └── logs/                        # 日志文件
+│
+├── main.py                          # 主程序入口
+├── requirements.txt                 # 依赖包列表
+└── README.md                        # 项目说明

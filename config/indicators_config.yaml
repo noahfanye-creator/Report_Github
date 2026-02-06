@@ -1,0 +1,79 @@
+# 趋势指标
+trend:
+  moving_averages:
+    - name: "MA5"
+      period: 5
+      color: "#FF6B6B"
+    - name: "MA10"
+      period: 10
+      color: "#4ECDC4"
+    - name: "MA20"
+      period: 20
+      color: "#45B7D1"
+    - name: "MA60"
+      period: 60
+      color: "#95A5A6"
+
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+    colors:
+      macd_line: "blue"
+      signal_line: "red"
+      histogram_up: "green"
+      histogram_down: "red"
+
+# 动量指标
+momentum:
+  rsi:
+    period: 14
+    overbought: 70
+    oversold: 30
+    color: "purple"
+
+  kdj:
+    period: 9
+    smooth_k: 3
+    smooth_d: 3
+    colors:
+      k_line: "blue"
+      d_line: "red"
+      j_line: "green"
+
+# 波动率指标
+volatility:
+  bollinger_bands:
+    period: 20
+    std_dev: 2
+    color: "gray"
+    alpha: 0.2
+
+  atr:
+    period: 14
+    color: "orange"
+
+# 成交量指标
+volume:
+  volume_ma:
+    periods: [5, 20]
+    colors: ["blue", "orange"]
+
+  obv:
+    enabled: true
+    color: "purple"
+
+# 港股特有指标
+hk_specific:
+  volatility_index:
+    period: 20
+    color: "#E74C3C"
+
+  money_flow:
+    period: 20
+    colors:
+      inflow: "#27AE60"
+      outflow: "#E74C3C"
+
+  block_trade_ratio:
+    threshold: 2.0  # 2倍标准差为大单

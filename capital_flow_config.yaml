@@ -1,0 +1,55 @@
+# config/capital_flow_config.yaml
+capital_flow:
+  # 数据源配置
+  data_sources:
+    real_time_source: "akshare"  # 实时数据源
+    historical_source: "tushare"  # 历史数据源
+    backup_source: "yfinance"
+  
+  # 资金流向分析配置
+  analysis:
+    main_force_threshold: 500000  # 主力资金门槛（元）
+    flow_periods: [1, 5, 20, 60]  # 分析周期（日）
+    anomaly_detection:
+      enabled: true
+      threshold_std: 2.5  # 异常检测标准差阈值
+    
+    # 资金情绪配置
+    sentiment:
+      calculation_method: "composite"  # 合成方法
+      weights:
+        main_force: 0.4
+        retail: 0.3
+        institution: 0.3
+      thresholds:
+        extreme_bullish: 80
+        bullish: 60
+        neutral: 40
+        bearish: 20
+        extreme_bearish: 0
+  
+  # 融资融券配置（A股专用）
+  margin_trading:
+    enabled: true
+    warning_thresholds:
+      margin_balance_ratio: 0.05  # 融资余额占流通市值比例警告线
+      short_selling_ratio: 0.03  # 融券比例警告线
+  
+  # 可视化配置
+  visualization:
+    chart_colors:
+      inflow: "#27AE60"  # 资金流入颜色
+      outflow: "#E74C3C"  # 资金流出颜色
+      main_force: "#3498DB"  # 主力资金颜色
+      retail: "#F39C12"  # 散户资金颜色
+    
+    chart_sizes:
+      flow_comparison: [12, 8]
+      sentiment_radar: [10, 10]
+      heatmap: [14, 10]
+  
+  # 报告集成配置
+  report:
+    section_order: 3  # 在报告中第3章节
+    include_charts: 3  # 包含图表数量
+    signal_generation: true

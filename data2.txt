@@ -1,0 +1,1931 @@
+# 专业数据准备与可视化系统设计
+
+## 一、数据采集架构
+
+### 1. 多源数据获取系统
+
+```python
+"""
+数据采集模块 - 多源适配，自动验证
+"""
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import akshare as ak
+import tushare as ts
+import yfinance as yf
+from typing import Dict, List, Tuple, Optional
+import warnings
+warnings.filterwarnings('ignore')
+
+class DataAcquisitionSystem:
+    """专业级A股数据采集系统"""
+    
+    def __init__(self, data_sources: List[str] = ['akshare', 'tushare']):
+        """
+        初始化数据源
+        :param data_sources: 数据源优先级列表
+        """
+        self.data_sources = data_sources
+        self.ts_pro = None  # Tushare Pro实例
+        self._initialize_data_sources()
+        
+    def _initialize_data_sources(self):
+        """初始化各数据源API"""
+        try:
+            if 'tushare' in self.data_sources:
+                ts.set_token('你的tushare token')  # 需要申请
+                self.ts_pro = ts.pro_api()
+        except Exception as e:
+            print(f"Tushare初始化失败: {e}")
+    
+    def get_stock_data(self, symbol: str, 
+                      start_date: str, 
+                      end_date: str,
+                      data_type: str = 'daily',
+                      adjust: str = 'hfq') -> pd.DataFrame:
+        """
+        获取股票数据（多源聚合）
+        :param symbol: 股票代码，格式：'sh688630' 或 '688630.SH'
+        :param start_date: 开始日期 'YYYY-MM-DD'
+        :param end_date: 结束日期 'YYYY-MM-DD'
+        :param data_type: 数据类型 'daily', 'weekly', 'monthly', '5min', '15min', '60min'
+        :param adjust: 复权类型 'hfq'(后复权), 'qfq'(前复权), None(不复权)
+        :return: 标准化的DataFrame
+        """
+        data = None
+        
+        # 尝试不同数据源
+        for source in self.data_sources:
+            try:
+                if source == 'akshare':
+                    data = self._get_from_akshare(symbol, start_date, end_date, data_type, adjust)
+                elif source == 'tushare':
+                    data = self._get_from_tushare(symbol, start_date, end_date, data_type, adjust)
+                elif source == 'yfinance':
+                    data = self._get_from_yfinance(symbol, start_date, end_date, data_type)
+                
+                if data is not None and not data.empty:
+                    break
+            except Exception as e:
+                print(f"数据源 {source} 失败: {e}")
+                continue
+        
+        if data is None or data.empty:
+            raise ValueError(f"无法从任何数据源获取 {symbol} 的数据")
+        
+        # 数据标准化处理
+        data = self._standardize_data(data, symbol)
+        
+        return data
+    
+    def _get_from_akshare(self, symbol: str, start_date: str, end_date: str,
+                         data_type: str, adjust: str) -> pd.DataFrame:
+        """从AKShare获取数据"""
+        # 转换代码格式
+        code = self._convert_symbol_format(symbol, 'akshare')
+        
+        if data_type == 'daily':
+            df = ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=adjust
+            )
+            # 重命名列
+            df = df.rename(columns={
+                '日期': 'date',
+                '开盘': 'open',
+                '收盘': 'close',
+                '最高': 'high',
+                '最低': 'low',
+                '成交量': 'volume',
+                '成交额': 'amount',
+                '振幅': 'amplitude',
+                '涨跌幅': 'pct_change',
+                '涨跌额': 'change',
+                '换手率': 'turnover'
+            })
+            
+        elif data_type == 'weekly':
+            df = ak.stock_zh_a_hist(
+                symbol=code,
+                period="weekly",
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust=adjust
+            )
+            df = df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close',
+                                   '最高': 'high', '最低': 'low', '成交量': 'volume'})
+        else:
+            raise ValueError(f"AKShare不支持的数据类型: {data_type}")
+        
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        
+        return df
+    
+    def _get_from_tushare(self, symbol: str, start_date: str, end_date: str,
+                         data_type: str, adjust: str) -> pd.DataFrame:
+        """从Tushare获取数据"""
+        if self.ts_pro is None:
+            return None
+        
+        # 转换代码格式
+        code = self._convert_symbol_format(symbol, 'tushare')
+        
+        if data_type == 'daily':
+            df = self.ts_pro.daily(
+                ts_code=code,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adj=adjust
+            )
+            df = df.rename(columns={'trade_date': 'date', 'open': 'open', 'close': 'close',
+                                   'high': 'high', 'low': 'low', 'vol': 'volume',
+                                   'amount': 'amount', 'pct_chg': 'pct_change'})
+            
+        elif data_type in ['5min', '15min', '30min', '60min']:
+            # 分钟数据
+            freq_map = {'5min': '5', '15min': '15', '30min': '30', '60min': '60'}
+            df = self.ts_pro.stk_mins(
+                ts_code=code,
+                freq=freq_map[data_type],
+                start_date=start_date.replace('-', '') + ' 09:00:00',
+                end_date=end_date.replace('-', '') + ' 15:00:00'
+            )
+            df = df.rename(columns={'trade_time': 'date', 'open': 'open', 'close': 'close',
+                                   'high': 'high', 'low': 'low', 'vol': 'volume',
+                                   'amount': 'amount'})
+        else:
+            return None
+        
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
+        df.sort_index(inplace=True)
+        
+        return df
+    
+    def _standardize_data(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """
+        标准化数据格式
+        确保所有数据源输出统一格式
+        """
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        
+        # 检查必要列
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"数据缺少必要列: {col}")
+        
+        # 确保数据类型正确
+        df = df.astype({
+            'open': 'float64',
+            'high': 'float64',
+            'low': 'float64',
+            'close': 'float64',
+            'volume': 'float64'
+        })
+        
+        # 计算额外指标
+        if 'amount' in df.columns:
+            df['amount'] = df['amount'].astype('float64')
+        else:
+            df['amount'] = df['close'] * df['volume']
+        
+        # 计算涨跌幅
+        if 'pct_change' not in df.columns:
+            df['pct_change'] = df['close'].pct_change() * 100
+        
+        # 添加股票代码
+        df['symbol'] = symbol
+        
+        # 确保索引是日期时间类型
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        
+        # 排序
+        df.sort_index(inplace=True)
+        
+        # 去除重复和无效数据
+        df = df[~df.index.duplicated(keep='first')]
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.dropna(subset=required_columns)
+        
+        return df
+    
+    def _convert_symbol_format(self, symbol: str, target: str) -> str:
+        """转换股票代码格式"""
+        if target == 'akshare':
+            # akshare格式: 'sh688630'
+            if '.' in symbol:
+                code, exchange = symbol.split('.')
+                if exchange.upper() == 'SH':
+                    return f"{code}.SH".lower()
+                elif exchange.upper() == 'SZ':
+                    return f"{code}.SZ".lower()
+            return symbol
+        elif target == 'tushare':
+            # tushare格式: '688630.SH'
+            if '.' not in symbol:
+                if symbol.startswith(('6', '9')):
+                    return f"{symbol}.SH"
+                elif symbol.startswith(('0', '3')):
+                    return f"{symbol}.SZ"
+            return symbol
+        return symbol
+```
+
+### 2. 数据质量验证系统
+
+```python
+class DataQualityValidator:
+    """数据质量验证系统"""
+    
+    @staticmethod
+    def validate_ohlcv(df: pd.DataFrame) -> Dict:
+        """
+        验证OHLCV数据质量
+        返回质量报告
+        """
+        report = {
+            'status': 'PASS',
+            'issues': [],
+            'statistics': {},
+            'completeness': 0.0
+        }
+        
+        # 1. 检查必要列
+        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            report['status'] = 'FAIL'
+            report['issues'].append(f"缺少必要列: {missing_cols}")
+            return report
+        
+        # 2. 检查数据范围
+        price_stats = {
+            'open_range': (df['open'].min(), df['open'].max()),
+            'high_range': (df['high'].min(), df['high'].max()),
+            'low_range': (df['low'].min(), df['low'].max()),
+            'close_range': (df['close'].min(), df['close'].max())
+        }
+        
+        # 检查价格合理性（A股通常不会超过10000元）
+        for col in ['open', 'high', 'low', 'close']:
+            if df[col].max() > 10000:
+                report['issues'].append(f"{col}价格异常高: {df[col].max()}")
+        
+        # 3. 检查OHLC逻辑
+        # high应该是最高，low应该是最低
+        logic_errors = 0
+        for idx, row in df.iterrows():
+            if not (row['low'] <= row['open'] <= row['high'] and 
+                    row['low'] <= row['close'] <= row['high']):
+                logic_errors += 1
+        
+        if logic_errors > 0:
+            report['issues'].append(f"发现 {logic_errors} 条OHLC逻辑错误")
+        
+        # 4. 检查缺失值
+        missing_vals = df[required_cols].isnull().sum()
+        total_vals = len(df) * len(required_cols)
+        completeness = 1 - missing_vals.sum() / total_vals
+        
+        report['completeness'] = completeness
+        if completeness < 0.95:
+            report['status'] = 'WARNING'
+            report['issues'].append(f"数据完整度较低: {completeness:.2%}")
+        
+        # 5. 检查时间连续性
+        if isinstance(df.index, pd.DatetimeIndex):
+            date_diff = df.index.to_series().diff().dt.days
+            gap_days = date_diff[date_diff > 1]
+            if len(gap_days) > 0:
+                report['issues'].append(f"数据存在 {len(gap_days)} 处时间间隔超过1天")
+        
+        # 6. 统计信息
+        report['statistics'] = {
+            'data_points': len(df),
+            'date_range': (df.index.min(), df.index.max()),
+            'price_mean': df['close'].mean(),
+            'price_std': df['close'].std(),
+            'volume_mean': df['volume'].mean(),
+            'completeness': completeness
+        }
+        
+        return report
+    
+    @staticmethod
+    def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        数据清洗
+        处理异常值、缺失值等
+        """
+        df_clean = df.copy()
+        
+        # 1. 处理缺失值（前向填充）
+        df_clean = df_clean.fillna(method='ffill')
+        
+        # 2. 处理OHLC逻辑错误
+        # 确保 high >= open, high >= close, low <= open, low <= close
+        df_clean['high'] = df_clean[['high', 'open', 'close']].max(axis=1)
+        df_clean['low'] = df_clean[['low', 'open', 'close']].min(axis=1)
+        
+        # 3. 处理极端值（使用IQR方法）
+        for col in ['open', 'high', 'low', 'close']:
+            Q1 = df_clean[col].quantile(0.25)
+            Q3 = df_clean[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 3 * IQR
+            upper_bound = Q3 + 3 * IQR
+            
+            # 将极端值替换为边界值
+            df_clean[col] = df_clean[col].clip(lower_bound, upper_bound)
+        
+        # 4. 处理成交量异常
+        if 'volume' in df_clean.columns:
+            # 对数变换处理极端成交量
+            df_clean['volume_log'] = np.log1p(df_clean['volume'])
+        
+        # 5. 去除重复索引
+        df_clean = df_clean[~df_clean.index.duplicated(keep='first')]
+        
+        return df_clean
+```
+
+---
+
+## 二、技术指标计算系统
+
+### 1. 标准技术指标计算库
+
+```python
+import talib
+import pandas_ta as ta
+from scipy import stats
+
+class TechnicalIndicatorCalculator:
+    """
+    标准技术指标计算器
+    遵循国际技术分析标准
+    """
+    
+    def __init__(self, data: pd.DataFrame):
+        """
+        :param data: 包含OHLCV数据的DataFrame
+        """
+        self.data = data.copy()
+        self.indicators = {}
+        
+    def calculate_all_indicators(self) -> pd.DataFrame:
+        """计算所有标准技术指标"""
+        
+        # 1. 趋势指标
+        self._calculate_trend_indicators()
+        
+        # 2. 动量指标
+        self._calculate_momentum_indicators()
+        
+        # 3. 波动率指标
+        self._calculate_volatility_indicators()
+        
+        # 4. 成交量指标
+        self._calculate_volume_indicators()
+        
+        # 5. 周期指标
+        self._calculate_cycle_indicators()
+        
+        # 合并所有指标
+        result = self.data.copy()
+        for category, indicators in self.indicators.items():
+            for name, values in indicators.items():
+                result[name] = values
+        
+        return result
+    
+    def _calculate_trend_indicators(self):
+        """计算趋势指标"""
+        close = self.data['close'].values
+        
+        # 移动平均线 (标准参数)
+        self.indicators['trend'] = {
+            'MA5': talib.SMA(close, timeperiod=5),
+            'MA10': talib.SMA(close, timeperiod=10),
+            'MA20': talib.SMA(close, timeperiod=20),
+            'MA30': talib.SMA(close, timeperiod=30),
+            'MA60': talib.SMA(close, timeperiod=60),
+            'MA120': talib.SMA(close, timeperiod=120),
+            'MA250': talib.SMA(close, timeperiod=250),
+            
+            # EMA (指数移动平均)
+            'EMA12': talib.EMA(close, timeperiod=12),
+            'EMA26': talib.EMA(close, timeperiod=26),
+            
+            # MACD (标准参数: 12,26,9)
+            'MACD': talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)[0],
+            'MACD_signal': talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)[1],
+            'MACD_hist': talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)[2],
+            
+            # 抛物线SAR
+            'SAR': talib.SAR(self.data['high'].values, self.data['low'].values),
+            
+            # 趋势线斜率
+            'trend_slope_20': self._calculate_trend_slope(close, 20),
+            'trend_slope_50': self._calculate_trend_slope(close, 50)
+        }
+    
+    def _calculate_momentum_indicators(self):
+        """计算动量指标"""
+        high = self.data['high'].values
+        low = self.data['low'].values
+        close = self.data['close'].values
+        
+        self.indicators['momentum'] = {
+            # RSI (标准参数: 14)
+            'RSI': talib.RSI(close, timeperiod=14),
+            
+            # Stochastic (标准参数: 14,3,3)
+            'STOCH_K': talib.STOCH(high, low, close, 
+                                 fastk_period=14, slowk_period=3, 
+                                 slowk_matype=0, slowd_period=3)[0],
+            'STOCH_D': talib.STOCH(high, low, close, 
+                                 fastk_period=14, slowk_period=3, 
+                                 slowk_matype=0, slowd_period=3)[1],
+            
+            # 威廉指标
+            'WILLR': talib.WILLR(high, low, close, timeperiod=14),
+            
+            # CCI (商品通道指数)
+            'CCI': talib.CCI(high, low, close, timeperiod=20),
+            
+            # 动量
+            'MOM': talib.MOM(close, timeperiod=10),
+            
+            # 变动率
+            'ROC': talib.ROC(close, timeperiod=10),
+            
+            # 乖离率 (BIAS)
+            'BIAS_6': (close - talib.SMA(close, 6)) / talib.SMA(close, 6) * 100,
+            'BIAS_12': (close - talib.SMA(close, 12)) / talib.SMA(close, 12) * 100,
+            'BIAS_24': (close - talib.SMA(close, 24)) / talib.SMA(close, 24) * 100
+        }
+    
+    def _calculate_volatility_indicators(self):
+        """计算波动率指标"""
+        high = self.data['high'].values
+        low = self.data['low'].values
+        close = self.data['close'].values
+        
+        self.indicators['volatility'] = {
+            # 布林带 (标准参数: 20,2)
+            'BB_upper': talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[0],
+            'BB_middle': talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[1],
+            'BB_lower': talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[2],
+            'BB_width': (talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[0] - 
+                        talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[2]) / 
+                       talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)[1],
+            
+            # 平均真实波幅 (ATR)
+            'ATR': talib.ATR(high, low, close, timeperiod=14),
+            
+            # 标准差
+            'STD_20': talib.STDDEV(close, timeperiod=20),
+            'STD_50': talib.STDDEV(close, timeperiod=50),
+            
+            # 真实波幅
+            'TR': talib.TRANGE(high, low, close),
+            
+            # 历史波动率
+            'HV_20': self._calculate_historical_volatility(close, 20),
+            'HV_60': self._calculate_historical_volatility(close, 60)
+        }
+    
+    def _calculate_volume_indicators(self):
+        """计算成交量指标"""
+        close = self.data['close'].values
+        volume = self.data['volume'].values
+        high = self.data['high'].values
+        low = self.data['low'].values
+        
+        self.indicators['volume'] = {
+            # 成交量均线
+            'VOL_MA5': talib.SMA(volume, timeperiod=5),
+            'VOL_MA10': talib.SMA(volume, timeperiod=10),
+            'VOL_MA20': talib.SMA(volume, timeperiod=20),
+            
+            # 能量潮 (OBV)
+            'OBV': talib.OBV(close, volume),
+            
+            # 成交量比率
+            'VR': self._calculate_volume_ratio(volume, 26),
+            
+            # 资金流量指标 (MFI)
+            'MFI': talib.MFI(high, low, close, volume, timeperiod=14),
+            
+            # 成交量加权平均价 (VWAP)
+            'VWAP': (np.cumsum(close * volume) / np.cumsum(volume)),
+            
+            # 量比
+            'volume_ratio': volume / talib.SMA(volume, timeperiod=5),
+            
+            # 换手率 (需要流通股本数据)
+            'turnover': volume  # 这里需要实际流通股本数据
+        }
+    
+    def _calculate_cycle_indicators(self):
+        """计算周期指标"""
+        close = self.data['close'].values
+        
+        self.indicators['cycle'] = {
+            # 希尔伯特变换 - 主导周期
+            'HT_DCPERIOD': talib.HT_DCPERIOD(close),
+            
+            # 希尔伯特变换 - 主导相位
+            'HT_DCPHASE': talib.HT_DCPHASE(close),
+            
+            # 希尔伯特变换 - 正弦波
+            'HT_SINE': talib.HT_SINE(close)[0],
+            'HT_LEADSINE': talib.HT_SINE(close)[1]
+        }
+    
+    def _calculate_trend_slope(self, prices, window):
+        """计算趋势线斜率"""
+        slopes = np.full_like(prices, np.nan)
+        
+        for i in range(window, len(prices)):
+            x = np.arange(window)
+            y = prices[i-window:i]
+            
+            # 线性回归
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
+            slopes[i] = slope
+        
+        return slopes
+    
+    def _calculate_historical_volatility(self, prices, window):
+        """计算历史波动率"""
+        returns = np.log(prices[1:] / prices[:-1])
+        hv = np.full_like(prices, np.nan)
+        
+        for i in range(window, len(returns)):
+            hv[i] = np.std(returns[i-window:i]) * np.sqrt(252)  # 年化波动率
+        
+        return hv
+    
+    def _calculate_volume_ratio(self, volume, period):
+        """计算成交量比率"""
+        vr = np.full_like(volume, np.nan)
+        
+        for i in range(period, len(volume)):
+            up_volume = np.sum(volume[i-period:i] * (volume[i-period:i] > volume[i-period-1:i-1]))
+            down_volume = np.sum(volume[i-period:i] * (volume[i-period:i] < volume[i-period-1:i-1]))
+            
+            if down_volume != 0:
+                vr[i] = up_volume / down_volume
+            else:
+                vr[i] = np.nan
+        
+        return vr
+```
+
+### 2. 技术信号生成器
+
+```python
+class TechnicalSignalGenerator:
+    """技术信号生成器（仅生成信号，不决策）"""
+    
+    @staticmethod
+    def generate_trend_signals(data: pd.DataFrame) -> pd.DataFrame:
+        """生成趋势信号"""
+        signals = pd.DataFrame(index=data.index)
+        
+        # 1. 移动平均线交叉信号
+        if 'MA5' in data.columns and 'MA20' in data.columns:
+            # 金叉：短期均线上穿长期均线
+            signals['MA_cross_golden'] = (
+                (data['MA5'] > data['MA20']) & 
+                (data['MA5'].shift(1) <= data['MA20'].shift(1))
+            )
+            # 死叉：短期均线下穿长期均线
+            signals['MA_cross_death'] = (
+                (data['MA5'] < data['MA20']) & 
+                (data['MA5'].shift(1) >= data['MA20'].shift(1))
+            )
+        
+        # 2. MACD信号
+        if 'MACD' in data.columns and 'MACD_signal' in data.columns:
+            # MACD金叉
+            signals['MACD_golden'] = (
+                (data['MACD'] > data['MACD_signal']) & 
+                (data['MACD'].shift(1) <= data['MACD_signal'].shift(1))
+            )
+            # MACD死叉
+            signals['MACD_death'] = (
+                (data['MACD'] < data['MACD_signal']) & 
+                (data['MACD'].shift(1) >= data['MACD_signal'].shift(1))
+            )
+            # MACD背离检测
+            signals['MACD_divergence'] = TechnicalSignalGenerator._detect_macd_divergence(data)
+        
+        # 3. 布林带信号
+        if all(col in data.columns for col in ['close', 'BB_upper', 'BB_lower']):
+            # 突破上轨
+            signals['BB_break_upper'] = (
+                (data['close'] > data['BB_upper']) & 
+                (data['close'].shift(1) <= data['BB_upper'].shift(1))
+            )
+            # 突破下轨
+            signals['BB_break_lower'] = (
+                (data['close'] < data['BB_lower']) & 
+                (data['close'].shift(1) >= data['BB_lower'].shift(1))
+            )
+            # 布林带收口
+            signals['BB_squeeze'] = data['BB_width'] < data['BB_width'].rolling(20).mean() * 0.5
+        
+        return signals
+    
+    @staticmethod
+    def _detect_macd_divergence(data: pd.DataFrame, window: int = 20) -> pd.Series:
+        """检测MACD背离"""
+        divergence = pd.Series(False, index=data.index)
+        
+        if 'MACD' not in data.columns or 'close' not in data.columns:
+            return divergence
+        
+        for i in range(window, len(data)):
+            # 寻找局部极值点
+            recent_macd = data['MACD'].iloc[i-window:i+1]
+            recent_price = data['close'].iloc[i-window:i+1]
+            
+            # 价格创新高但MACD未创新高（顶背离）
+            if (recent_price.iloc[-1] == recent_price.max() and 
+                recent_macd.iloc[-1] < recent_macd.max()):
+                divergence.iloc[i] = True
+            
+            # 价格创新低但MACD未创新低（底背离）
+            elif (recent_price.iloc[-1] == recent_price.min() and 
+                  recent_macd.iloc[-1] > recent_macd.min()):
+                divergence.iloc[i] = True
+        
+        return divergence
+    
+    @staticmethod
+    def generate_momentum_signals(data: pd.DataFrame) -> pd.DataFrame:
+        """生成动量信号"""
+        signals = pd.DataFrame(index=data.index)
+        
+        # 1. RSI信号
+        if 'RSI' in data.columns:
+            # 超买
+            signals['RSI_overbought'] = data['RSI'] > 70
+            # 超卖
+            signals['RSI_oversold'] = data['RSI'] < 30
+            # RSI背离
+            signals['RSI_divergence'] = TechnicalSignalGenerator._detect_rsi_divergence(data)
+        
+        # 2. KDJ信号
+        if all(col in data.columns for col in ['STOCH_K', 'STOCH_D']):
+            # KDJ金叉
+            signals['KDJ_golden'] = (
+                (data['STOCH_K'] > data['STOCH_D']) & 
+                (data['STOCH_K'].shift(1) <= data['STOCH_D'].shift(1))
+            )
+            # KDJ死叉
+            signals['KDJ_death'] = (
+                (data['STOCH_K'] < data['STOCH_D']) & 
+                (data['STOCH_K'].shift(1) >= data['STOCH_D'].shift(1))
+            )
+            # KDJ超买超卖
+            signals['KDJ_overbought'] = (data['STOCH_K'] > 80) & (data['STOCH_D'] > 80)
+            signals['KDJ_oversold'] = (data['STOCH_K'] < 20) & (data['STOCH_D'] < 20)
+        
+        # 3. CCI信号
+        if 'CCI' in data.columns:
+            signals['CCI_buy'] = (data['CCI'] < -100) & (data['CCI'].shift(1) >= -100)
+            signals['CCI_sell'] = (data['CCI'] > 100) & (data['CCI'].shift(1) <= 100)
+        
+        return signals
+    
+    @staticmethod
+    def _detect_rsi_divergence(data: pd.DataFrame, window: int = 20) -> pd.Series:
+        """检测RSI背离"""
+        divergence = pd.Series(False, index=data.index)
+        
+        if 'RSI' not in data.columns or 'close' not in data.columns:
+            return divergence
+        
+        for i in range(window, len(data)):
+            recent_rsi = data['RSI'].iloc[i-window:i+1]
+            recent_price = data['close'].iloc[i-window:i+1]
+            
+            # 顶背离
+            if (recent_price.iloc[-1] == recent_price.max() and 
+                recent_rsi.iloc[-1] < recent_rsi.max()):
+                divergence.iloc[i] = True
+            
+            # 底背离
+            elif (recent_price.iloc[-1] == recent_price.min() and 
+                  recent_rsi.iloc[-1] > recent_rsi.min()):
+                divergence.iloc[i] = True
+        
+        return divergence
+    
+    @staticmethod
+    def generate_volume_signals(data: pd.DataFrame) -> pd.DataFrame:
+        """生成成交量信号"""
+        signals = pd.DataFrame(index=data.index)
+        
+        # 1. 量价背离
+        if 'close' in data.columns and 'volume' in data.columns:
+            price_change = data['close'].pct_change()
+            volume_change = data['volume'].pct_change()
+            
+            # 价升量减（顶背离）
+            signals['price_volume_divergence_top'] = (
+                (price_change > 0) & (volume_change < 0)
+            )
+            # 价跌量减（底背离）
+            signals['price_volume_divergence_bottom'] = (
+                (price_change < 0) & (volume_change < 0)
+            )
+        
+        # 2. 放量突破
+        if all(col in data.columns for col in ['volume', 'VOL_MA20']):
+            signals['volume_breakout'] = (
+                (data['volume'] > data['VOL_MA20'] * 1.5) & 
+                (data['volume'].shift(1) <= data['VOL_MA20'].shift(1) * 1.5)
+            )
+        
+        # 3. OBV信号
+        if 'OBV' in data.columns:
+            obv_ma = data['OBV'].rolling(20).mean()
+            signals['OBV_break'] = (
+                (data['OBV'] > obv_ma) & 
+                (data['OBV'].shift(1) <= obv_ma.shift(1))
+            )
+        
+        return signals
+```
+
+---
+
+## 三、专业可视化系统
+
+### 1. 标准技术分析图表
+
+```python
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from matplotlib.patches import Rectangle
+import mplfinance as mpf
+from matplotlib import ticker
+
+class ProfessionalChartRenderer:
+    """专业级技术分析图表渲染器"""
+    
+    def __init__(self, style='classic'):
+        self.style = style
+        self.setup_styles()
+    
+    def setup_styles(self):
+        """设置图表样式"""
+        plt.style.use('seaborn-v0_8-darkgrid')
+        
+        self.colors = {
+            'primary': '#2E86AB',    # 主色
+            'secondary': '#A23B72',  # 辅助色
+            'accent': '#F18F01',     # 强调色
+            'success': '#73C6B6',    # 成功色
+            'warning': '#F1C40F',    # 警告色
+            'danger': '#E74C3C',     # 危险色
+            
+            # 技术指标颜色
+            'ma5': '#FF6B6B',       # MA5
+            'ma10': '#4ECDC4',      # MA10
+            'ma20': '#45B7D1',      # MA20
+            'ma60': '#95A5A6',      # MA60
+            'bb_upper': '#7F8C8D',  # 布林上轨
+            'bb_lower': '#7F8C8D',  # 布林下轨
+            
+            # 斐波那契颜色
+            'fib_236': '#E74C3C',
+            'fib_382': '#F39C12',
+            'fib_500': '#F1C40F',
+            'fib_618': '#2ECC71',
+            'fib_786': '#3498DB'
+        }
+        
+    def create_multi_timeframe_dashboard(self, 
+                                        daily_data: pd.DataFrame,
+                                        weekly_data: pd.DataFrame = None,
+                                        monthly_data: pd.DataFrame = None,
+                                        indicators: Dict = None) -> plt.Figure:
+        """
+        创建多时间框架仪表盘
+        包含日线、周线、月线图表
+        """
+        fig = plt.figure(figsize=(20, 15))
+        
+        # 创建网格布局
+        gs = gridspec.GridSpec(5, 3, figure=fig, 
+                              height_ratios=[3, 1, 1, 1, 1],
+                              width_ratios=[2, 2, 1])
+        
+        # 1. 日线主图（K线 + 均线 + 布林带）
+        ax_daily_main = fig.add_subplot(gs[0, :2])
+        self._plot_daily_main_chart(ax_daily_main, daily_data)
+        
+        # 2. 日线成交量
+        ax_daily_volume = fig.add_subplot(gs[1, :2], sharex=ax_daily_main)
+        self._plot_volume_chart(ax_daily_volume, daily_data)
+        
+        # 3. 日线MACD
+        ax_daily_macd = fig.add_subplot(gs[2, :2], sharex=ax_daily_main)
+        self._plot_macd_chart(ax_daily_macd, daily_data)
+        
+        # 4. 日线RSI
+        ax_daily_rsi = fig.add_subplot(gs[3, :2], sharex=ax_daily_main)
+        self._plot_rsi_chart(ax_daily_rsi, daily_data)
+        
+        # 5. 周线图
+        if weekly_data is not None:
+            ax_weekly = fig.add_subplot(gs[0, 2])
+            self._plot_weekly_chart(ax_weekly, weekly_data)
+        
+        # 6. 月线图
+        if monthly_data is not None:
+            ax_monthly = fig.add_subplot(gs[1, 2])
+            self._plot_monthly_chart(ax_monthly, monthly_data)
+        
+        # 7. 技术指标面板
+        ax_indicators = fig.add_subplot(gs[2:, 2])
+        self._plot_indicator_panel(ax_indicators, daily_data, indicators)
+        
+        plt.tight_layout()
+        return fig
+    
+    def _plot_daily_main_chart(self, ax, data: pd.DataFrame):
+        """绘制日线主图"""
+        # 绘制K线图（使用mplfinance风格）
+        mpf.plot(data.tail(100), type='candle', ax=ax, style='yahoo')
+        
+        # 添加均线
+        if 'MA5' in data.columns:
+            ax.plot(data.index[-100:], data['MA5'].tail(100), 
+                   color=self.colors['ma5'], label='MA5', linewidth=1.5, alpha=0.8)
+        if 'MA10' in data.columns:
+            ax.plot(data.index[-100:], data['MA10'].tail(100), 
+                   color=self.colors['ma10'], label='MA10', linewidth=1.5, alpha=0.8)
+        if 'MA20' in data.columns:
+            ax.plot(data.index[-100:], data['MA20'].tail(100), 
+                   color=self.colors['ma20'], label='MA20', linewidth=1.5, alpha=0.8)
+        if 'MA60' in data.columns:
+            ax.plot(data.index[-100:], data['MA60'].tail(100), 
+                   color=self.colors['ma60'], label='MA60', linewidth=1.5, alpha=0.8)
+        
+        # 添加布林带
+        if all(col in data.columns for col in ['BB_upper', 'BB_lower']):
+            ax.fill_between(data.index[-100:], 
+                          data['BB_upper'].tail(100), 
+                          data['BB_lower'].tail(100),
+                          alpha=0.2, color='gray', label='Bollinger Bands')
+        
+        # 设置标题和标签
+        ax.set_title(f'{data["symbol"].iloc[0]} - 日线图', fontsize=14, fontweight='bold')
+        ax.set_ylabel('价格', fontsize=12)
+        ax.legend(loc='upper left', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # 格式化x轴日期
+        ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%m-%d'))
+    
+    def _plot_volume_chart(self, ax, data: pd.DataFrame):
+        """绘制成交量图"""
+        # 计算成交量颜色（涨为红，跌为绿）
+        colors = ['red' if close >= open_ else 'green' 
+                 for close, open_ in zip(data['close'].tail(100), data['open'].tail(100))]
+        
+        ax.bar(data.index[-100:], data['volume'].tail(100), 
+               color=colors, alpha=0.7, width=0.8)
+        
+        # 添加成交量均线
+        if 'VOL_MA5' in data.columns:
+            ax.plot(data.index[-100:], data['VOL_MA5'].tail(100), 
+                   color='blue', label='VOL_MA5', linewidth=1.5, alpha=0.8)
+        if 'VOL_MA20' in data.columns:
+            ax.plot(data.index[-100:], data['VOL_MA20'].tail(100), 
+                   color='orange', label='VOL_MA20', linewidth=1.5, alpha=0.8)
+        
+        ax.set_ylabel('成交量', fontsize=12)
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.set_xlabel('日期', fontsize=12)
+        
+        # 隐藏x轴标签（与主图共享）
+        plt.setp(ax.get_xticklabels(), visible=True)
+    
+    def _plot_macd_chart(self, ax, data: pd.DataFrame):
+        """绘制MACD图"""
+        if all(col in data.columns for col in ['MACD', 'MACD_signal', 'MACD_hist']):
+            # 绘制MACD线和信号线
+            ax.plot(data.index[-100:], data['MACD'].tail(100), 
+                   color='blue', label='MACD', linewidth=1.5)
+            ax.plot(data.index[-100:], data['MACD_signal'].tail(100), 
+                   color='red', label='Signal', linewidth=1.5)
+            
+            # 绘制MACD柱状图
+            ax.bar(data.index[-100:], data['MACD_hist'].tail(100),
+                  color=['green' if x >= 0 else 'red' 
+                         for x in data['MACD_hist'].tail(100)],
+                  alpha=0.5, width=0.8)
+            
+            # 零轴线
+            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5, alpha=0.5)
+            
+            ax.set_ylabel('MACD', fontsize=12)
+            ax.legend(loc='upper left', fontsize=9)
+            ax.grid(True, alpha=0.3, linestyle='--')
+    
+    def _plot_rsi_chart(self, ax, data: pd.DataFrame):
+        """绘制RSI图"""
+        if 'RSI' in data.columns:
+            ax.plot(data.index[-100:], data['RSI'].tail(100), 
+                   color='purple', linewidth=2, label='RSI(14)')
+            
+            # 超买超卖线
+            ax.axhline(y=70, color='red', linestyle='--', linewidth=1, alpha=0.7, label='超买线')
+            ax.axhline(y=30, color='green', linestyle='--', linewidth=1, alpha=0.7, label='超卖线')
+            
+            # 填充区域
+            ax.fill_between(data.index[-100:], 30, 70, alpha=0.1, color='gray')
+            
+            ax.set_ylabel('RSI', fontsize=12)
+            ax.set_ylim(0, 100)
+            ax.legend(loc='upper left', fontsize=9)
+            ax.grid(True, alpha=0.3, linestyle='--')
+    
+    def _plot_indicator_panel(self, ax, data: pd.DataFrame, indicators: Dict = None):
+        """绘制技术指标面板（仪表盘）"""
+        ax.axis('off')  # 隐藏坐标轴
+        
+        # 创建技术指标表格
+        latest = data.iloc[-1]
+        
+        # 准备指标数据
+        indicator_data = [
+            ["指标", "数值", "状态"],
+            ["价格", f"{latest['close']:.2f}", self._get_price_status(latest)],
+            ["涨跌幅", f"{latest.get('pct_change', 0):.2f}%", self._get_change_status(latest)],
+            ["RSI(14)", f"{latest.get('RSI', 0):.1f}", self._get_rsi_status(latest)],
+            ["MACD", f"{latest.get('MACD', 0):.3f}", self._get_macd_status(latest)],
+            ["KDJ K", f"{latest.get('STOCH_K', 0):.1f}", self._get_kdj_status(latest)],
+            ["成交量", f"{latest['volume']/1e6:.2f}M", self._get_volume_status(data)],
+            ["ATR", f"{latest.get('ATR', 0):.2f}", "波动率"],
+            ["布林宽度", f"{latest.get('BB_width', 0)*100:.1f}%", self._get_bb_status(latest)]
+        ]
+        
+        # 创建表格
+        table = ax.table(cellText=indicator_data,
+                        cellLoc='center',
+                        loc='center',
+                        colWidths=[0.3, 0.3, 0.4])
+        
+        # 设置表格样式
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 2)
+        
+        # 设置单元格颜色
+        for i in range(len(indicator_data)):
+            for j in range(len(indicator_data[0])):
+                cell = table[i, j]
+                if i == 0:  # 标题行
+                    cell.set_facecolor('#2E86AB')
+                    cell.set_text_props(color='white', weight='bold')
+                elif i % 2 == 0:  # 偶数行
+                    cell.set_facecolor('#F5F5F5')
+                else:  # 奇数行
+                    cell.set_facecolor('#FFFFFF')
+        
+        ax.set_title('技术指标面板', fontsize=12, fontweight='bold', pad=20)
+    
+    def _get_price_status(self, data_row):
+        """获取价格状态"""
+        if 'MA5' in data_row and 'MA20' in data_row:
+            if data_row['close'] > data_row['MA20']:
+                return "多头"
+            else:
+                return "空头"
+        return "未知"
+    
+    def _get_rsi_status(self, data_row):
+        """获取RSI状态"""
+        rsi = data_row.get('RSI', 50)
+        if rsi > 70:
+            return "超买"
+        elif rsi < 30:
+            return "超卖"
+        else:
+            return "正常"
+    
+    def _get_macd_status(self, data_row):
+        """获取MACD状态"""
+        macd = data_row.get('MACD', 0)
+        signal = data_row.get('MACD_signal', 0)
+        if macd > signal:
+            return "金叉"
+        else:
+            return "死叉"
+```
+
+### 2. 数据报告生成器
+
+```python
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+import json
+
+class TechnicalDataReport:
+    """技术数据报告生成器"""
+    
+    def __init__(self, title="技术分析数据报告"):
+        self.title = title
+        self.styles = getSampleStyleSheet()
+        self._setup_custom_styles()
+        
+    def _setup_custom_styles(self):
+        """设置自定义样式"""
+        # 标题样式
+        self.title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=self.styles['Heading1'],
+            fontSize=18,
+            textColor=colors.HexColor('#2C3E50'),
+            spaceAfter=30,
+            alignment=1  # 居中
+        )
+        
+        # 小节标题
+        self.section_style = ParagraphStyle(
+            'SectionTitle',
+            parent=self.styles['Heading2'],
+            fontSize=14,
+            textColor=colors.HexColor('#3498DB'),
+            spaceBefore=20,
+            spaceAfter=10
+        )
+        
+        # 表格标题
+        self.table_header_style = ParagraphStyle(
+            'TableHeader',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            textColor=colors.white,
+            alignment=1,
+            fontName='Helvetica-Bold'
+        )
+        
+        # 数据样式
+        self.data_style = ParagraphStyle(
+            'DataStyle',
+            parent=self.styles['Normal'],
+            fontSize=9,
+            fontName='Courier',
+            textColor=colors.black
+        )
+    
+    def generate_report(self, data_dict: Dict, 
+                       charts: List[str],
+                       output_path: str = "technical_data_report.pdf"):
+        """
+        生成完整的数据报告
+        :param data_dict: 包含所有分析数据的字典
+        :param charts: 图表文件路径列表
+        :param output_path: 输出PDF路径
+        """
+        doc = SimpleDocTemplate(output_path, pagesize=A4,
+                                rightMargin=72, leftMargin=72,
+                                topMargin=72, bottomMargin=72)
+        
+        story = []
+        
+        # 1. 封面页
+        story.extend(self._create_cover_page(data_dict))
+        
+        # 2. 数据质量报告
+        story.extend(self._create_data_quality_section(data_dict))
+        
+        # 3. 技术指标摘要
+        story.extend(self._create_indicators_summary(data_dict))
+        
+        # 4. 价格数据表
+        story.extend(self._create_price_data_table(data_dict))
+        
+        # 5. 图表部分
+        story.extend(self._create_charts_section(charts))
+        
+        # 6. 原始数据（供AI分析）
+        story.extend(self._create_raw_data_section(data_dict))
+        
+        # 生成PDF
+        doc.build(story)
+        print(f"报告已生成: {output_path}")
+        
+        return output_path
+    
+    def _create_cover_page(self, data_dict):
+        """创建封面页"""
+        elements = []
+        
+        # 标题
+        elements.append(Paragraph(self.title, self.title_style))
+        elements.append(Spacer(1, 20))
+        
+        # 基本信息
+        metadata = data_dict.get('metadata', {})
+        info_table = [
+            ["股票代码", metadata.get('symbol', 'N/A')],
+            ["分析日期", metadata.get('analysis_date', 'N/A')],
+            ["数据周期", metadata.get('data_period', 'N/A')],
+            ["最新价格", f"{metadata.get('price_latest', 0):.2f}"],
+            ["数据点数", str(metadata.get('data_points', 0))]
+        ]
+        
+        t = Table(info_table, colWidths=[2*inch, 3*inch])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F5F5F5'))
+        ]))
+        
+        elements.append(t)
+        elements.append(Spacer(1, 40))
+        
+        # 免责声明
+        disclaimer = """
+        <font size="8">
+        <b>免责声明：</b>本报告仅提供技术分析数据，不构成投资建议。数据来源于公开市场，可能存在延迟或错误。使用者应独立判断并承担投资风险。
+        </font>
+        """
+        elements.append(Paragraph(disclaimer, self.styles['Normal']))
+        
+        return elements
+    
+    def _create_data_quality_section(self, data_dict):
+        """创建数据质量报告部分"""
+        elements = []
+        
+        elements.append(Paragraph("数据质量报告", self.section_style))
+        
+        quality_report = data_dict.get('quality_report', {})
+        
+        # 质量指标表格
+        quality_data = [
+            ["检查项目", "状态", "详情"],
+            ["数据完整性", quality_report.get('completeness', 'N/A'), 
+             f"{quality_report.get('completeness_percent', 0):.1f}%"],
+            ["时间连续性", quality_report.get('time_continuity', 'N/A'), 
+             quality_report.get('time_gaps', 0)],
+            ["价格逻辑", quality_report.get('price_logic', 'N/A'), 
+             quality_report.get('logic_errors', 0)],
+            ["数据范围", quality_report.get('data_range', 'N/A'), 
+             quality_report.get('range_check', 'OK')],
+            ["总体质量", quality_report.get('overall_quality', 'N/A'), 
+             quality_report.get('quality_score', 0)]
+        ]
+        
+        t = Table(quality_data, colWidths=[2*inch, 1.5*inch, 2*inch])
+        
+        # 设置颜色基于状态
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495E')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ])
+        
+        # 为不同状态设置背景色
+        for i, row in enumerate(quality_data[1:], 1):
+            status = row[1]
+            if status == 'PASS':
+                bg_color = colors.HexColor('#2ECC71')
+            elif status == 'WARNING':
+                bg_color = colors.HexColor('#F39C12')
+            else:
+                bg_color = colors.HexColor('#E74C3C')
+            
+            style.add('BACKGROUND', (1, i), (1, i), bg_color)
+        
+        t.setStyle(style)
+        elements.append(t)
+        elements.append(Spacer(1, 20))
+        
+        return elements
+    
+    def _create_indicators_summary(self, data_dict):
+        """创建技术指标摘要"""
+        elements = []
+        
+        elements.append(Paragraph("技术指标摘要", self.section_style))
+        
+        indicators = data_dict.get('technical_indicators', {})
+        
+        # 趋势指标
+        trend_data = []
+        if 'trend_indicators' in indicators:
+            trend = indicators['trend_indicators']
+            trend_data = [
+                ["MA5", f"{trend.get('MA5', 0):.2f}"],
+                ["MA20", f"{trend.get('MA20', 0):.2f}"],
+                ["MA60", f"{trend.get('MA60', 0):.2f}"],
+                ["趋势强度", trend.get('trend_strength', 'N/A')],
+                ["MACD", f"{trend.get('MACD', 0):.3f}"]
+            ]
+        
+        # 动量指标
+        momentum_data = []
+        if 'momentum_indicators' in indicators:
+            momentum = indicators['momentum_indicators']
+            momentum_data = [
+                ["RSI", f"{momentum.get('RSI', 0):.1f}"],
+                ["RSI状态", momentum.get('RSI_status', 'N/A')],
+                ["KDJ_K", f"{momentum.get('KDJ_K', 0):.1f}"],
+                ["KDJ_D", f"{momentum.get('KDJ_D', 0):.1f}"]
+            ]
+        
+        # 创建两列表格
+        summary_table = []
+        max_len = max(len(trend_data), len(momentum_data))
+        
+        for i in range(max_len):
+            row = []
+            if i < len(trend_data):
+                row.extend(trend_data[i])
+            else:
+                row.extend(['', ''])
+            
+            if i < len(momentum_data):
+                row.extend(momentum_data[i])
+            else:
+                row.extend(['', ''])
+            
+            summary_table.append(row)
+        
+        # 添加表头
+        header = ["趋势指标", "数值", "动量指标", "数值"]
+        summary_table.insert(0, header)
+        
+        t = Table(summary_table, colWidths=[1.5*inch, 1*inch, 1.5*inch, 1*inch])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498DB')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('BACKGROUND', (0, 1), (1, -1), colors.HexColor('#F8F9F9')),
+            ('BACKGROUND', (2, 1), (3, -1), colors.HexColor('#F8F9F9'))
+        ]))
+        
+        elements.append(t)
+        elements.append(Spacer(1, 20))
+        
+        return elements
+    
+    def _create_price_data_table(self, data_dict, num_rows=20):
+        """创建价格数据表"""
+        elements = []
+        
+        elements.append(Paragraph("近期价格数据", self.section_style))
+        
+        # 获取最新的价格数据
+        price_data = data_dict.get('price_data', [])
+        if not price_data:
+            elements.append(Paragraph("无价格数据", self.styles['Normal']))
+            return elements
+        
+        # 选择最近的数据
+        recent_data = price_data[-num_rows:] if len(price_data) > num_rows else price_data
+        
+        # 创建表格数据
+        table_data = [["日期", "开盘", "最高", "最低", "收盘", "成交量", "涨跌幅"]]
+        
+        for data_point in recent_data[::-1]:  # 倒序显示，最新的在最上面
+            row = [
+                data_point.get('date', ''),
+                f"{data_point.get('open', 0):.2f}",
+                f"{data_point.get('high', 0):.2f}",
+                f"{data_point.get('low', 0):.2f}",
+                f"{data_point.get('close', 0):.2f}",
+                f"{data_point.get('volume', 0)/1e6:.2f}M",
+                f"{data_point.get('pct_change', 0):+.2f}%"
+            ]
+            table_data.append(row)
+        
+        t = Table(table_data, colWidths=[1*inch, 0.8*inch, 0.8*inch, 0.8*inch, 
+                                        0.8*inch, 1*inch, 0.8*inch])
+        
+        # 设置表格样式
+        style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2C3E50')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+            ('FONTSIZE', (0, 1), (-1, -1), 9)
+        ])
+        
+        # 为涨跌列设置颜色
+        for i, row in enumerate(table_data[1:], 1):
+            pct_change = float(row[6].strip('%+'))
+            if pct_change > 0:
+                text_color = colors.red
+            elif pct_change < 0:
+                text_color = colors.green
+            else:
+                text_color = colors.black
+            
+            style.add('TEXTCOLOR', (6, i), (6, i), text_color)
+        
+        t.setStyle(style)
+        elements.append(t)
+        elements.append(Spacer(1, 20))
+        
+        return elements
+    
+    def _create_charts_section(self, chart_paths):
+        """创建图表部分"""
+        elements = []
+        
+        elements.append(Paragraph("技术分析图表", self.section_style))
+        
+        for i, chart_path in enumerate(chart_paths):
+            try:
+                img = Image(chart_path, width=6*inch, height=4*inch)
+                elements.append(img)
+                elements.append(Spacer(1, 10))
+                
+                # 每页最多放一个图表
+                if i < len(chart_paths) - 1:
+                    elements.append(Paragraph("更多图表见下页...", self.styles['Normal']))
+                    elements.append(Spacer(1, 20))
+            except Exception as e:
+                print(f"无法加载图表 {chart_path}: {e}")
+                elements.append(Paragraph(f"图表加载失败: {chart_path}", self.styles['Normal']))
+        
+        return elements
+    
+    def _create_raw_data_section(self, data_dict):
+        """创建原始数据部分（供AI分析）"""
+        elements = []
+        
+        elements.append(Paragraph("原始分析数据（JSON格式）", self.section_style))
+        
+        # 移除可能的大数据部分，保留关键分析数据
+        ai_data = {
+            'metadata': data_dict.get('metadata', {}),
+            'quality_summary': {
+                'completeness': data_dict.get('quality_report', {}).get('completeness_percent', 0),
+                'status': data_dict.get('quality_report', {}).get('overall_quality', 'N/A')
+            },
+            'technical_summary': {
+                'trend': data_dict.get('technical_indicators', {}).get('trend_indicators', {}),
+                'momentum': data_dict.get('technical_indicators', {}).get('momentum_indicators', {}),
+                'volatility': data_dict.get('technical_indicators', {}).get('volatility_indicators', {}),
+                'volume': data_dict.get('technical_indicators', {}).get('volume_indicators', {})
+            },
+            'latest_signals': data_dict.get('latest_signals', {}),
+            'key_levels': data_dict.get('key_levels', {})
+        }
+        
+        # 转换为格式化的JSON字符串
+        json_str = json.dumps(ai_data, indent=2, ensure_ascii=False)
+        
+        # 使用等宽字体显示JSON
+        elements.append(Paragraph(f"<font face='Courier' size='8'>{json_str}</font>", 
+                                self.styles['Normal']))
+        
+        return elements
+```
+
+---
+
+## 四、完整数据准备流程
+
+```python
+class CompleteDataPreparationPipeline:
+    """完整的数据准备流水线"""
+    
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.data_acquirer = DataAcquisitionSystem(['akshare', 'tushare'])
+        self.validator = DataQualityValidator()
+        self.calculator = None
+        self.chart_renderer = ProfessionalChartRenderer()
+        self.report_generator = TechnicalDataReport()
+        
+        self.daily_data = None
+        self.weekly_data = None
+        self.monthly_data = None
+        
+    def run(self, 
+            start_date: str = '2025-01-01',
+            end_date: str = '2026-01-26',
+            generate_charts: bool = True,
+            generate_report: bool = True) -> Dict:
+        """
+        运行完整数据准备流程
+        :return: 包含所有数据的字典
+        """
+        print("="*50)
+        print(f"开始准备 {self.symbol} 的技术分析数据")
+        print("="*50)
+        
+        result = {}
+        
+        try:
+            # 1. 获取数据
+            print("1. 获取数据...")
+            self._fetch_data(start_date, end_date)
+            
+            # 2. 验证数据质量
+            print("2. 验证数据质量...")
+            quality_report = self._validate_data()
+            result['quality_report'] = quality_report
+            
+            # 3. 清洗数据
+            print("3. 清洗数据...")
+            self._clean_data()
+            
+            # 4. 计算技术指标
+            print("4. 计算技术指标...")
+            indicators_data = self._calculate_indicators()
+            result.update(indicators_data)
+            
+            # 5. 生成技术信号
+            print("5. 生成技术信号...")
+            signals = self._generate_signals()
+            result['latest_signals'] = signals
+            
+            # 6. 生成图表
+            chart_paths = []
+            if generate_charts:
+                print("6. 生成技术图表...")
+                chart_paths = self._generate_charts()
+                result['chart_paths'] = chart_paths
+            
+            # 7. 生成报告
+            if generate_report:
+                print("7. 生成数据报告...")
+                report_path = self._generate_report(result, chart_paths)
+                result['report_path'] = report_path
+            
+            # 8. 准备AI分析数据
+            print("8. 准备AI分析数据...")
+            ai_data = self._prepare_ai_data(result)
+            result['ai_analysis_data'] = ai_data
+            
+            print("\n" + "="*50)
+            print("数据准备完成！")
+            print(f"数据点数: {len(self.daily_data)}")
+            print(f"数据质量: {quality_report.get('overall_quality', 'N/A')}")
+            print(f"图表数量: {len(chart_paths)}")
+            print("="*50)
+            
+            return result
+            
+        except Exception as e:
+            print(f"数据准备失败: {e}")
+            raise
+    
+    def _fetch_data(self, start_date: str, end_date: str):
+        """获取多时间框架数据"""
+        # 日线数据
+        self.daily_data = self.data_acquirer.get_stock_data(
+            self.symbol, start_date, end_date, 'daily', 'hfq'
+        )
+        
+        # 周线数据（最近一年）
+        weekly_start = (datetime.strptime(end_date, '%Y-%m-%d') - 
+                       timedelta(days=365)).strftime('%Y-%m-%d')
+        self.weekly_data = self.data_acquirer.get_stock_data(
+            self.symbol, weekly_start, end_date, 'weekly', 'hfq'
+        )
+        
+        # 月线数据（最近三年）
+        monthly_start = (datetime.strptime(end_date, '%Y-%m-%d') - 
+                        timedelta(days=3*365)).strftime('%Y-%m-%d')
+        self.monthly_data = self.data_acquirer.get_stock_data(
+            self.symbol, monthly_start, end_date, 'monthly', 'hfq'
+        )
+    
+    def _validate_data(self) -> Dict:
+        """验证数据质量"""
+        reports = {}
+        
+        # 验证日线数据
+        if self.daily_data is not None:
+            daily_report = self.validator.validate_ohlcv(self.daily_data)
+            reports['daily'] = daily_report
+        
+        # 验证周线数据
+        if self.weekly_data is not None:
+            weekly_report = self.validator.validate_ohlcv(self.weekly_data)
+            reports['weekly'] = weekly_report
+        
+        # 生成综合质量报告
+        overall_report = {
+            'daily_quality': reports.get('daily', {}).get('status', 'UNKNOWN'),
+            'weekly_quality': reports.get('weekly', {}).get('status', 'UNKNOWN'),
+            'completeness_percent': reports.get('daily', {}).get('completeness', 0) * 100,
+            'data_points_daily': len(self.daily_data) if self.daily_data is not None else 0,
+            'data_points_weekly': len(self.weekly_data) if self.weekly_data is not None else 0,
+            'issues': []
+        }
+        
+        # 收集所有问题
+        for timeframe, report in reports.items():
+            overall_report['issues'].extend(report.get('issues', []))
+        
+        # 确定总体质量
+        if all(report.get('status') == 'PASS' for report in reports.values()):
+            overall_report['overall_quality'] = 'EXCELLENT'
+            overall_report['quality_score'] = 95
+        elif any(report.get('status') == 'FAIL' for report in reports.values()):
+            overall_report['overall_quality'] = 'POOR'
+            overall_report['quality_score'] = 40
+        else:
+            overall_report['overall_quality'] = 'GOOD'
+            overall_report['quality_score'] = 75
+        
+        return overall_report
+    
+    def _clean_data(self):
+        """清洗数据"""
+        if self.daily_data is not None:
+            self.daily_data = self.validator.clean_data(self.daily_data)
+        
+        if self.weekly_data is not None:
+            self.weekly_data = self.validator.clean_data(self.weekly_data)
+        
+        if self.monthly_data is not None:
+            self.monthly_data = self.validator.clean_data(self.monthly_data)
+    
+    def _calculate_indicators(self) -> Dict:
+        """计算技术指标"""
+        result = {}
+        
+        # 计算日线指标
+        if self.daily_data is not None:
+            self.calculator = TechnicalIndicatorCalculator(self.daily_data)
+            daily_with_indicators = self.calculator.calculate_all_indicators()
+            self.daily_data = daily_with_indicators
+            
+            # 提取关键指标
+            latest = self.daily_data.iloc[-1]
+            
+            result['technical_indicators'] = {
+                'trend_indicators': {
+                    'MA5': float(latest.get('MA5', 0)),
+                    'MA10': float(latest.get('MA10', 0)),
+                    'MA20': float(latest.get('MA20', 0)),
+                    'MA60': float(latest.get('MA60', 0)),
+                    'MACD': float(latest.get('MACD', 0)),
+                    'MACD_signal': float(latest.get('MACD_signal', 0)),
+                    'MACD_hist': float(latest.get('MACD_hist', 0))
+                },
+                'momentum_indicators': {
+                    'RSI': float(latest.get('RSI', 0)),
+                    'RSI_status': 'OVERBOUGHT' if latest.get('RSI', 0) > 70 else 
+                                 'OVERSOLD' if latest.get('RSI', 0) < 30 else 'NEUTRAL',
+                    'STOCH_K': float(latest.get('STOCH_K', 0)),
+                    'STOCH_D': float(latest.get('STOCH_D', 0)),
+                    'CCI': float(latest.get('CCI', 0))
+                },
+                'volatility_indicators': {
+                    'ATR': float(latest.get('ATR', 0)),
+                    'BB_width': float(latest.get('BB_width', 0)),
+                    'BB_position': 'UPPER' if latest['close'] > latest.get('BB_upper', 0) else 
+                                  'LOWER' if latest['close'] < latest.get('BB_lower', 0) else 'MIDDLE'
+                },
+                'volume_indicators': {
+                    'volume': float(latest.get('volume', 0)),
+                    'VOL_MA5': float(latest.get('VOL_MA5', 0)),
+                    'VOL_MA20': float(latest.get('VOL_MA20', 0)),
+                    'OBV': float(latest.get('OBV', 0))
+                }
+            }
+            
+            # 价格数据（最近100条）
+            result['price_data'] = []
+            for idx, row in self.daily_data.tail(100).iterrows():
+                result['price_data'].append({
+                    'date': idx.strftime('%Y-%m-%d'),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': float(row['volume']),
+                    'pct_change': float(row.get('pct_change', 0))
+                })
+        
+        # 元数据
+        result['metadata'] = {
+            'symbol': self.symbol,
+            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data_period': {
+                'daily': f"{self.daily_data.index[0].date()} to {self.daily_data.index[-1].date()}" 
+                         if self.daily_data is not None else 'N/A',
+                'weekly': f"{self.weekly_data.index[0].date()} to {self.weekly_data.index[-1].date()}" 
+                          if self.weekly_data is not None else 'N/A'
+            },
+            'price_latest': float(self.daily_data['close'].iloc[-1]) if self.daily_data is not None else 0,
+            'volume_latest': float(self.daily_data['volume'].iloc[-1]) if self.daily_data is not None else 0,
+            'data_points': len(self.daily_data) if self.daily_data is not None else 0
+        }
+        
+        # 关键价位（基于最近价格范围）
+        if self.daily_data is not None:
+            recent_high = self.daily_data['high'].tail(50).max()
+            recent_low = self.daily_data['low'].tail(50).min()
+            current_price = self.daily_data['close'].iloc[-1]
+            
+            result['key_levels'] = {
+                'recent_high': float(recent_high),
+                'recent_low': float(recent_low),
+                'current_price': float(current_price),
+                'resistance_levels': [
+                    float(recent_high),
+                    float(recent_high * 0.98),
+                    float(recent_high * 0.95)
+                ],
+                'support_levels': [
+                    float(recent_low),
+                    float(recent_low * 1.02),
+                    float(recent_low * 1.05)
+                ]
+            }
+        
+        return result
+    
+    def _generate_signals(self) -> Dict:
+        """生成技术信号"""
+        if self.daily_data is None:
+            return {}
+        
+        signals = {}
+        
+        # 趋势信号
+        trend_signals = TechnicalSignalGenerator.generate_trend_signals(self.daily_data)
+        latest_trend = trend_signals.iloc[-1]
+        signals['trend'] = {
+            'MA_golden_cross': bool(latest_trend.get('MA_cross_golden', False)),
+            'MA_death_cross': bool(latest_trend.get('MA_cross_death', False)),
+            'MACD_golden': bool(latest_trend.get('MACD_golden', False)),
+            'MACD_death': bool(latest_trend.get('MACD_death', False)),
+            'BB_break_upper': bool(latest_trend.get('BB_break_upper', False)),
+            'BB_break_lower': bool(latest_trend.get('BB_break_lower', False))
+        }
+        
+        # 动量信号
+        momentum_signals = TechnicalSignalGenerator.generate_momentum_signals(self.daily_data)
+        latest_momentum = momentum_signals.iloc[-1]
+        signals['momentum'] = {
+            'RSI_overbought': bool(latest_momentum.get('RSI_overbought', False)),
+            'RSI_oversold': bool(latest_momentum.get('RSI_oversold', False)),
+            'KDJ_golden': bool(latest_momentum.get('KDJ_golden', False)),
+            'KDJ_death': bool(latest_momentum.get('KDJ_death', False))
+        }
+        
+        # 成交量信号
+        volume_signals = TechnicalSignalGenerator.generate_volume_signals(self.daily_data)
+        latest_volume = volume_signals.iloc[-1]
+        signals['volume'] = {
+            'volume_breakout': bool(latest_volume.get('volume_breakout', False)),
+            'OBV_break': bool(latest_volume.get('OBV_break', False))
+        }
+        
+        # 综合信号计数
+        all_signals = []
+        for category in signals.values():
+            for signal_name, is_active in category.items():
+                if is_active:
+                    all_signals.append(signal_name)
+        
+        signals['summary'] = {
+            'total_signals': len(all_signals),
+            'active_signals': all_signals,
+            'bullish_count': sum(1 for s in all_signals if 'golden' in s or 'break_upper' in s),
+            'bearish_count': sum(1 for s in all_signals if 'death' in s or 'break_lower' in s)
+        }
+        
+        return signals
+    
+    def _generate_charts(self) -> List[str]:
+        """生成技术图表"""
+        chart_paths = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # 1. 多时间框架仪表盘
+        dashboard_fig = self.chart_renderer.create_multi_timeframe_dashboard(
+            daily_data=self.daily_data,
+            weekly_data=self.weekly_data,
+            monthly_data=self.monthly_data
+        )
+        dashboard_path = f"chart_dashboard_{timestamp}.png"
+        dashboard_fig.savefig(dashboard_path, dpi=300, bbox_inches='tight')
+        chart_paths.append(dashboard_path)
+        plt.close(dashboard_fig)
+        
+        # 2. 详细日线图
+        if self.daily_data is not None:
+            # 创建更详细的日线分析图
+            fig, axes = plt.subplots(4, 1, figsize=(15, 12), 
+                                    gridspec_kw={'height_ratios': [3, 1, 1, 1]})
+            
+            # K线图
+            mpf.plot(self.daily_data.tail(100), type='candle', ax=axes[0], style='yahoo')
+            
+            # 成交量
+            axes[1].bar(self.daily_data.index[-100:], 
+                       self.daily_data['volume'].tail(100),
+                       color=['red' if close >= open_ else 'green' 
+                              for close, open_ in zip(self.daily_data['close'].tail(100), 
+                                                     self.daily_data['open'].tail(100))])
+            
+            # RSI
+            if 'RSI' in self.daily_data.columns:
+                axes[2].plot(self.daily_data.index[-100:], 
+                           self.daily_data['RSI'].tail(100), color='purple')
+                axes[2].axhline(y=70, color='red', linestyle='--')
+                axes[2].axhline(y=30, color='green', linestyle='--')
+            
+            # MACD
+            if all(col in self.daily_data.columns for col in ['MACD', 'MACD_signal']):
+                axes[3].plot(self.daily_data.index[-100:], 
+                           self.daily_data['MACD'].tail(100), color='blue')
+                axes[3].plot(self.daily_data.index[-100:], 
+                           self.daily_data['MACD_signal'].tail(100), color='red')
+                axes[3].axhline(y=0, color='black', linestyle='-', alpha=0.5)
+            
+            plt.tight_layout()
+            detail_path = f"chart_detail_{timestamp}.png"
+            plt.savefig(detail_path, dpi=300, bbox_inches='tight')
+            chart_paths.append(detail_path)
+            plt.close()
+        
+        return chart_paths
+    
+    def _generate_report(self, data_dict: Dict, chart_paths: List[str]) -> str:
+        """生成数据报告"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_path = f"technical_data_report_{timestamp}.pdf"
+        
+        report_path = self.report_generator.generate_report(
+            data_dict=data_dict,
+            charts=chart_paths,
+            output_path=report_path
+        )
+        
+        return report_path
+    
+    def _prepare_ai_data(self, result_dict: Dict) -> Dict:
+        """准备供AI分析的数据"""
+        # 创建轻量化的AI分析数据
+        ai_data = {
+            'metadata': result_dict.get('metadata', {}),
+            'key_metrics': {
+                'current_price': result_dict.get('metadata', {}).get('price_latest', 0),
+                'volume': result_dict.get('metadata', {}).get('volume_latest', 0),
+                'data_quality': result_dict.get('quality_report', {}).get('quality_score', 0)
+            },
+            'technical_indicators': result_dict.get('technical_indicators', {}),
+            'latest_signals': result_dict.get('latest_signals', {}),
+            'price_history': {
+                'last_10_days': result_dict.get('price_data', [])[-10:] if 'price_data' in result_dict else [],
+                'recent_high': result_dict.get('key_levels', {}).get('recent_high', 0),
+                'recent_low': result_dict.get('key_levels', {}).get('recent_low', 0)
+            },
+            'timestamps': {
+                'data_end_date': result_dict.get('metadata', {}).get('data_period', {}).get('daily', '').split(' to ')[-1],
+                'analysis_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+        }
+        
+        # 保存为JSON文件
+        json_path = f"ai_analysis_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(ai_data, f, ensure_ascii=False, indent=2)
+        
+        ai_data['json_path'] = json_path
+        return ai_data
+```
+
+---
+
+## 五、使用示例
+
+```python
+# 使用示例
+if __name__ == "__main__":
+    # 1. 初始化数据准备流水线
+    pipeline = CompleteDataPreparationPipeline(symbol="sh688630")
+    
+    # 2. 运行完整数据准备流程
+    try:
+        result = pipeline.run(
+            start_date="2025-06-01",
+            end_date="2026-01-26",
+            generate_charts=True,
+            generate_report=True
+        )
+        
+        # 3. 打印关键信息
+        print("\n数据准备结果摘要:")
+        print(f"- 数据质量: {result['quality_report']['overall_quality']}")
+        print(f"- 最新价格: {result['metadata']['price_latest']:.2f}")
+        print(f"- RSI: {result['technical_indicators']['momentum_indicators']['RSI']:.1f}")
+        print(f"- MACD: {result['technical_indicators']['trend_indicators']['MACD']:.3f}")
+        print(f"- 技术信号数: {result['latest_signals']['summary']['total_signals']}")
+        print(f"- 报告文件: {result.get('report_path', 'N/A')}")
+        print(f"- AI数据文件: {result['ai_analysis_data'].get('json_path', 'N/A')}")
+        
+        # 4. 检查数据质量
+        if result['quality_report']['quality_score'] < 70:
+            print("\n警告: 数据质量较低，建议检查数据源")
+        
+    except Exception as e:
+        print(f"执行失败: {e}")
+```
+
+---
+
+## 六、输出文件说明
+
+运行完成后，系统将生成以下文件：
+
+### 1. **图表文件**
+- `chart_dashboard_YYYYMMDD_HHMMSS.png` - 多时间框架仪表盘
+- `chart_detail_YYYYMMDD_HHMMSS.png` - 详细日线分析图
+
+### 2. **报告文件**
+- `technical_data_report_YYYYMMDD_HHMMSS.pdf` - 完整技术数据报告
+
+### 3. **数据文件**
+- `ai_analysis_data_YYYYMMDD_HHMMSS.json` - AI分析专用数据（轻量化）
+
+### 4. **报告内容**
+报告PDF包含：
+- 封面页（基本信息）
+- 数据质量报告
+- 技术指标摘要
+- 近期价格数据表
+- 技术分析图表
+- 原始分析数据（JSON格式）
+
+---
+
+## 七、关键特性总结
+
+### 1. **数据质量保证**
+- 多数据源冗余备份
+- 自动数据质量验证
+- 异常值检测与处理
+- 时间连续性检查
+
+### 2. **标准化指标计算**
+- 使用TA-Lib标准库
+- 国际标准参数设置
+- 完整的趋势、动量、波动率、成交量指标
+
+### 3. **专业可视化**
+- 多时间框架对比
+- 标准技术分析图表布局
+- 清晰的信号标注
+- 响应式设计
+
+### 4. **AI友好输出**
+- 结构化JSON数据
+- 轻量化数据格式
+- 包含所有关键分析结果
+- 易于Notebook LM解析
+
+### 5. **可扩展性**
+- 模块化设计
+- 易于添加新数据源
+- 支持自定义指标
+- 灵活的图表配置
+
+---
+
+这个系统为您提供了一个**完全标准化、自动化、高质量**的数据准备流水线。所有数据都经过严格验证，所有指标都按国际标准计算，所有输出都适合直接输入Notebook LM进行分析。

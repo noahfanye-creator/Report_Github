@@ -1,0 +1,13 @@
+{
+  "symbol": "600519",
+  "generated_at": "2026-01-27T05:34:52.171940",
+  "timeframes": [
+    "monthly",
+    "weekly",
+    "daily",
+    "60min",
+    "30min",
+    "5min"
+  ],
+  "data_source": "mock_data"
+}

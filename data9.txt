@@ -1,0 +1,865 @@
+# 资金面数据分析模块设计与集成方案
+
+## 一、资金面数据模块架构设计
+
+### 1.1 整体架构
+```
+资金面数据模块
+├── 数据获取层
+│   ├── 资金流向数据获取器
+│   ├── 融资融券数据获取器
+│   ├── 大宗交易数据获取器
+│   └── 持股数据获取器
+├── 分析计算层
+│   ├── 资金流向分析器
+│   ├── 主力资金识别器
+│   ├── 资金情绪计算器
+│   └── 资金共振分析器
+├── 可视化层
+│   ├── 资金流向图表
+│   ├── 资金情绪仪表板
+│   └── 资金共振热力图
+└── 报告集成层
+    ├── 资金面分析章节
+    ├── 资金信号生成器
+    └── AI数据格式化
+```
+
+### 1.2 资金面数据分类
+
+| 数据类型 | A股特有 | 港股特有 | 数据频率 | 更新延迟 |
+|---------|--------|---------|---------|---------|
+| 北向资金 | ✓ | - | 每日 | T+1（盘中实时） |
+| 南向资金 | ✓ | ✓ | 每日 | T+1 |
+| 主力资金 | ✓ | ✓ | 实时 | 15分钟 |
+| 融资融券 | ✓ | - | 每日 | T+1 |
+| 大宗交易 | ✓ | ✓ | 每日 | T+1 |
+| 机构持股 | ✓ | ✓ | 季度 | 季度末 |
+| 资金情绪 | ✓ | ✓ | 实时 | 即时 |
+| 板块资金 | ✓ | ✓ | 实时 | 15分钟 |
+
+## 二、新增Python包依赖
+
+```txt
+# 资金面数据专用包
+akshare>=1.12.0  # 新增资金面数据接口
+tushare>=1.2.89  # 融资融券数据
+easyquotation>=0.7.0  # 实时资金流
+stockstats>=0.3.2  # 资金流指标计算
+
+# 数据处理增强
+scikit-learn>=1.3.0  # 资金模式识别
+networkx>=3.1  # 资金流向网络分析
+plotly>=5.15.0  # 交互式资金流向图
+
+# 数据库支持（可选）
+sqlalchemy>=2.0.0
+redis>=5.0.0  # 实时资金数据缓存
+```
+
+## 三、新增文件结构
+
+```
+src/
+├── 📁 capital_flow/                    # 资金面分析模块
+│   ├── __init__.py
+│   ├── 📁 data_sources/               # 资金数据源
+│   │   ├── __init__.py
+│   │   ├── capital_flow_data.py       # 资金流向数据获取
+│   │   ├── margin_trading_data.py     # 融资融券数据获取
+│   │   ├── block_trading_data.py      # 大宗交易数据获取
+│   │   ├── holding_data.py            # 持股数据获取
+│   │   └── sentiment_data.py          # 资金情绪数据
+│   │
+│   ├── 📁 analysis/                   # 资金分析引擎
+│   │   ├── __init__.py
+│   │   ├── capital_flow_analyzer.py   # 资金流向分析
+│   │   ├── main_force_identifier.py   # 主力资金识别
+│   │   ├── sentiment_calculator.py    # 资金情绪计算
+│   │   ├── resonance_analyzer.py      # 资金共振分析
+│   │   └── sector_flow_analyzer.py    # 板块资金分析
+│   │
+│   ├── 📁 indicators/                 # 资金面指标
+│   │   ├── __init__.py
+│   │   ├── flow_indicators.py         # 资金流指标
+│   │   ├── sentiment_indicators.py    # 情绪指标
+│   │   ├── strength_indicators.py     # 资金强度指标
+│   │   └── anomaly_indicators.py      # 资金异动指标
+│   │
+│   ├── 📁 visualization/              # 资金可视化
+│   │   ├── __init__.py
+│   │   ├── flow_charts.py             # 资金流向图
+│   │   ├── sentiment_dashboard.py     # 情绪仪表板
+│   │   ├── heatmap_generator.py       # 热力图生成器
+│   │   ├── network_visualizer.py      # 资金网络图
+│   │   └── sankey_diagram.py          # 桑基图
+│   │
+│   └── 📁 integration/                # 报告集成
+│       ├── __init__.py
+│       ├── report_section.py          # 报告章节生成
+│       ├── signal_generator.py        # 资金信号生成
+│       └── ai_data_formatter.py       # AI数据格式化
+│
+├── 📁 models/                         # 新增数据模型
+│   ├── capital_flow_models.py         # 资金流数据模型
+│   ├── margin_trading_models.py       # 融资融券模型
+│   └── sentiment_models.py            # 情绪数据模型
+│
+└── 📁 config/                         # 新增配置文件
+    ├── capital_flow_config.yaml       # 资金面配置
+    └── sentiment_config.yaml          # 情绪分析配置
+```
+
+## 四、核心Python文件详细设计
+
+### 4.1 资金流向数据获取器
+
+```python
+# src/capital_flow/data_sources/capital_flow_data.py
+"""
+资金流向数据获取核心模块
+支持实时、日频、分钟级资金流数据
+"""
+
+class CapitalFlowDataFetcher:
+    """资金流向数据获取器"""
+    
+    def __init__(self, market_type):
+        self.market_type = market_type
+        self.data_sources = self._initialize_sources()
+    
+    def get_real_time_capital_flow(self, symbol, date=None):
+        """
+        获取实时资金流向
+        :param symbol: 股票代码
+        :param date: 日期（默认今天）
+        :return: 实时资金流数据字典
+        """
+        # 实现逻辑：
+        # 1. 获取实时五档行情
+        # 2. 计算主力资金流向
+        # 3. 获取大单数据
+        # 4. 计算资金净流入
+        pass
+    
+    def get_daily_capital_flow(self, symbol, start_date, end_date):
+        """
+        获取日频资金流向
+        :param symbol: 股票代码
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :return: DataFrame
+        """
+        # 实现逻辑：
+        # 1. 获取北向/南向资金（如适用）
+        # 2. 获取龙虎榜数据
+        # 3. 获取主力资金日频数据
+        pass
+    
+    def get_minute_capital_flow(self, symbol, date):
+        """
+        获取分钟级资金流向
+        :param symbol: 股票代码
+        :param date: 日期
+        :return: DataFrame（分钟频率）
+        """
+        pass
+    
+    def get_sector_capital_flow(self, sector_code, date=None):
+        """
+        获取板块资金流向
+        :param sector_code: 板块代码
+        :param date: 日期
+        :return: 板块资金流数据
+        """
+        pass
+```
+
+### 4.2 融资融券数据获取器
+
+```python
+# src/capital_flow/data_sources/margin_trading_data.py
+"""
+融资融券数据获取
+仅适用于A股
+"""
+
+class MarginTradingDataFetcher:
+    """融资融券数据获取器"""
+    
+    def get_margin_summary(self, symbol, date=None):
+        """
+        获取融资融券概要
+        :param symbol: 股票代码
+        :param date: 日期
+        :return: 融资融券数据字典
+        """
+        # 返回字段：
+        # - 融资余额
+        # - 融资买入额
+        # - 融券余额
+        # - 融券卖出量
+        # - 融资融券余额占流通市值比例
+        pass
+    
+    def get_margin_history(self, symbol, start_date, end_date):
+        """
+        获取融资融券历史数据
+        :param symbol: 股票代码
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :return: DataFrame
+        """
+        pass
+    
+    def get_margin_ranking(self, date=None, top_n=50):
+        """
+        获取融资融券排名
+        :param date: 日期
+        :param top_n: 前N名
+        :return: DataFrame
+        """
+        pass
+```
+
+### 4.3 资金流向分析器
+
+```python
+# src/capital_flow/analysis/capital_flow_analyzer.py
+"""
+资金流向分析核心引擎
+"""
+
+class CapitalFlowAnalyzer:
+    """资金流向分析器"""
+    
+    def analyze_flow_pattern(self, flow_data):
+        """
+        分析资金流模式
+        :param flow_data: 资金流数据
+        :return: 分析结果字典
+        """
+        # 分析维度：
+        # 1. 资金流入流出趋势
+        # 2. 主力资金行为识别
+        # 3. 散户资金行为识别
+        # 4. 资金流与价格关系
+        pass
+    
+    def calculate_flow_indicators(self, flow_data):
+        """
+        计算资金流技术指标
+        :param flow_data: 资金流数据
+        :return: 指标字典
+        """
+        # 计算指标：
+        # - 资金净流入率
+        # - 主力资金占比
+        # - 资金流入强度
+        # - 资金流乖离率
+        # - 资金流动量
+        pass
+    
+    def detect_flow_anomalies(self, flow_data):
+        """
+        检测资金流异常
+        :param flow_data: 资金流数据
+        :return: 异常检测结果
+        """
+        # 检测类型：
+        # 1. 资金大幅流入流出
+        # 2. 主力资金异动
+        # 3. 资金流与价格背离
+        pass
+```
+
+### 4.4 资金情绪计算器
+
+```python
+# src/capital_flow/analysis/sentiment_calculator.py
+"""
+资金情绪量化计算
+"""
+
+class CapitalSentimentCalculator:
+    """资金情绪计算器"""
+    
+    def calculate_market_sentiment(self, date=None):
+        """
+        计算市场整体资金情绪
+        :param date: 日期
+        :return: 情绪指数（0-100）
+        """
+        # 计算维度：
+        # 1. 北向资金情绪
+        # 2. 主力资金情绪
+        # 3. 散户资金情绪
+        # 4. 板块轮动情绪
+        pass
+    
+    def calculate_stock_sentiment(self, symbol, date=None):
+        """
+        计算个股资金情绪
+        :param symbol: 股票代码
+        :param date: 日期
+        :return: 个股情绪指数
+        """
+        # 计算维度：
+        # 1. 主力资金态度
+        # 2. 散户资金态度
+        # 3. 机构资金态度
+        # 4. 资金集中度
+        pass
+    
+    def analyze_sentiment_trend(self, symbol, period=20):
+        """
+        分析资金情绪趋势
+        :param symbol: 股票代码
+        :param period: 分析周期
+        :return: 趋势分析结果
+        """
+        pass
+```
+
+### 4.5 资金流向图表生成器
+
+```python
+# src/capital_flow/visualization/flow_charts.py
+"""
+资金流向可视化图表
+"""
+
+class CapitalFlowChartGenerator:
+    """资金流向图表生成器"""
+    
+    def create_flow_comparison_chart(self, symbol, date_range):
+        """
+        创建资金流向对比图
+        :param symbol: 股票代码
+        :param date_range: 日期范围
+        :return: 图表对象
+        """
+        # 图表内容：
+        # 1. 价格走势与资金流入叠加图
+        # 2. 主力vs散户资金流向对比
+        # 3. 北向/南向资金历史走势
+        pass
+    
+    def create_sentiment_radar_chart(self, sentiment_data):
+        """
+        创建资金情绪雷达图
+        :param sentiment_data: 情绪数据
+        :return: 雷达图对象
+        """
+        # 雷达图维度：
+        # - 主力资金情绪
+        # - 散户资金情绪
+        # - 机构资金情绪
+        # - 资金集中度
+        # - 资金稳定性
+        pass
+    
+    def create_flow_heatmap(self, flow_matrix, date_range):
+        """
+        创建资金流热力图
+        :param flow_matrix: 资金流矩阵
+        :param date_range: 日期范围
+        :return: 热力图对象
+        """
+        # 显示：
+        # 1. 时间-资金流强度热力图
+        # 2. 板块资金轮动热力图
+        pass
+    
+    def create_sankey_diagram(self, flow_data):
+        """
+        创建资金流向桑基图
+        :param flow_data: 资金流向数据
+        :return: 桑基图对象
+        """
+        # 显示资金在不同主体间的流动
+        # 如：北向资金 → 机构 → 散户
+        pass
+```
+
+### 4.6 报告集成模块
+
+```python
+# src/capital_flow/integration/report_section.py
+"""
+资金面分析报告章节生成
+"""
+
+class CapitalFlowReportSection:
+    """资金面报告章节生成器"""
+    
+    def generate_section(self, symbol, market_type, analysis_data):
+        """
+        生成资金面分析章节
+        :param symbol: 股票代码
+        :param market_type: 市场类型
+        :param analysis_data: 分析数据
+        :return: 报告章节内容（HTML/PDF格式）
+        """
+        # 章节结构：
+        # 1. 资金流向概览
+        # 2. 主力资金分析
+        # 3. 资金情绪分析
+        # 4. 融资融券分析（A股）
+        # 5. 资金面技术指标
+        # 6. 资金信号与建议
+        pass
+    
+    def generate_summary_table(self, capital_data):
+        """
+        生成资金面摘要表格
+        :param capital_data: 资金面数据
+        :return: 表格HTML
+        """
+        # 表格内容：
+        # | 指标 | 数值 | 状态 | 说明 |
+        # |------|------|------|------|
+        # | 主力资金净流入 | 1.2亿 | 强势流入 | 连续3日流入 |
+        # | 北向资金持仓 | 5.6% | 增持 | 较上月+0.5% |
+        # | 融资余额 | 8.9亿 | 高位 | 占流通市值4.2% |
+        pass
+    
+    def generate_signals(self, analysis_data):
+        """
+        生成资金面信号
+        :param analysis_data: 分析数据
+        :return: 信号列表
+        """
+        # 信号类型：
+        # 1. 主力资金大幅流入
+        # 2. 北向资金连续增持
+        # 3. 融资余额创新高
+        # 4. 资金情绪极度乐观/悲观
+        pass
+```
+
+## 五、配置文件和数据结构
+
+### 5.1 资金面配置文件
+
+```yaml
+# config/capital_flow_config.yaml
+capital_flow:
+  # 数据源配置
+  data_sources:
+    real_time_source: "akshare"  # 实时数据源
+    historical_source: "tushare"  # 历史数据源
+    backup_source: "yfinance"
+  
+  # 资金流向分析配置
+  analysis:
+    main_force_threshold: 500000  # 主力资金门槛（元）
+    flow_periods: [1, 5, 20, 60]  # 分析周期（日）
+    anomaly_detection:
+      enabled: true
+      threshold_std: 2.5  # 异常检测标准差阈值
+    
+    # 资金情绪配置
+    sentiment:
+      calculation_method: "composite"  # 合成方法
+      weights:
+        main_force: 0.4
+        retail: 0.3
+        institution: 0.3
+      thresholds:
+        extreme_bullish: 80
+        bullish: 60
+        neutral: 40
+        bearish: 20
+        extreme_bearish: 0
+  
+  # 融资融券配置（A股专用）
+  margin_trading:
+    enabled: true
+    warning_thresholds:
+      margin_balance_ratio: 0.05  # 融资余额占流通市值比例警告线
+      short_selling_ratio: 0.03  # 融券比例警告线
+  
+  # 可视化配置
+  visualization:
+    chart_colors:
+      inflow: "#27AE60"  # 资金流入颜色
+      outflow: "#E74C3C"  # 资金流出颜色
+      main_force: "#3498DB"  # 主力资金颜色
+      retail: "#F39C12"  # 散户资金颜色
+    
+    chart_sizes:
+      flow_comparison: [12, 8]
+      sentiment_radar: [10, 10]
+      heatmap: [14, 10]
+  
+  # 报告集成配置
+  report:
+    section_order: 3  # 在报告中第3章节
+    include_charts: 3  # 包含图表数量
+    signal_generation: true
+```
+
+### 5.2 资金面数据模型
+
+```python
+# src/models/capital_flow_models.py
+"""
+资金面数据模型定义
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Dict, Optional
+import pandas as pd
+
+@dataclass
+class CapitalFlowData:
+    """资金流向数据模型"""
+    symbol: str
+    date: datetime
+    # 资金流入流出
+    inflow_total: float  # 总流入
+    outflow_total: float  # 总流出
+    net_inflow: float  # 净流入
+    
+    # 分类型资金流
+    main_force_inflow: float  # 主力资金流入
+    main_force_outflow: float  # 主力资金流出
+    retail_inflow: float  # 散户资金流入
+    retail_outflow: float  # 散户资金流出
+    
+    # 北向/南向资金
+    northbound_flow: Optional[float] = None  # 北向资金
+    southbound_flow: Optional[float] = None  # 南向资金
+    
+    # 成交明细
+    large_order_volume: float  # 大单成交量
+    medium_order_volume: float  # 中单成交量
+    small_order_volume: float  # 小单成交量
+
+@dataclass
+class MarginTradingData:
+    """融资融券数据模型"""
+    symbol: str
+    date: datetime
+    # 融资数据
+    margin_balance: float  # 融资余额
+    margin_buy_amount: float  # 融资买入额
+    margin_repay_amount: float  # 融资偿还额
+    
+    # 融券数据
+    short_balance: float  # 融券余额
+    short_sell_amount: float  # 融券卖出量
+    short_cover_amount: float  # 融券偿还量
+    
+    # 比例指标
+    margin_ratio: float  # 融资余额占流通市值比例
+    short_ratio: float  # 融券余额占流通市值比例
+
+@dataclass
+class CapitalSentiment:
+    """资金情绪数据模型"""
+    symbol: str
+    date: datetime
+    # 情绪指数（0-100）
+    overall_sentiment: float  # 总体情绪
+    main_force_sentiment: float  # 主力情绪
+    retail_sentiment: float  # 散户情绪
+    institution_sentiment: float  # 机构情绪
+    
+    # 情绪趋势
+    sentiment_trend: str  # 上升/下降/平稳
+    trend_strength: float  # 趋势强度
+    
+    # 情绪状态
+    sentiment_state: str  # 极度乐观/乐观/中性/悲观/极度悲观
+    confidence_level: float  # 置信度
+
+@dataclass
+class CapitalFlowSignal:
+    """资金面信号模型"""
+    symbol: str
+    signal_type: str  # 信号类型
+    signal_strength: float  # 信号强度（0-100）
+    trigger_date: datetime
+    description: str
+    confidence: float  # 置信度
+    related_indicators: List[str]  # 相关指标
+    recommendation: Optional[str] = None  # 操作建议
+```
+
+## 六、API接口设计
+
+### 6.1 资金面数据API
+
+```python
+# src/api/capital_flow_api.py
+"""
+资金面数据API接口
+"""
+
+class CapitalFlowAPI:
+    """资金面数据API"""
+    
+    @staticmethod
+    def get_capital_summary(symbol: str, date: str = None) -> Dict:
+        """
+        获取资金面概要
+        """
+        pass
+    
+    @staticmethod
+    def get_flow_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取历史资金流向
+        """
+        pass
+    
+    @staticmethod
+    def get_realtime_flow(symbol: str) -> Dict:
+        """
+        获取实时资金流向
+        """
+        pass
+    
+    @staticmethod
+    def get_sentiment_analysis(symbol: str) -> Dict:
+        """
+        获取资金情绪分析
+        """
+        pass
+    
+    @staticmethod
+    def get_margin_data(symbol: str) -> Dict:
+        """
+        获取融资融券数据（A股）
+        """
+        pass
+    
+    @staticmethod
+    def generate_capital_report(symbol: str, report_type: str = "full") -> Dict:
+        """
+        生成资金面分析报告
+        :param symbol: 股票代码
+        :param report_type: 报告类型（summary/full/detailed）
+        """
+        pass
+```
+
+## 七、集成到主系统的修改点
+
+### 7.1 修改主数据获取器
+
+```python
+# 修改 src/data/data_acquirer.py
+class EnhancedDataAcquirer(DataAcquirer):
+    """增强版数据获取器（集成资金面数据）"""
+    
+    def get_all_data(self, symbol, **kwargs):
+        """获取全部数据（包括资金面）"""
+        # 原有技术面数据
+        technical_data = super().get_all_data(symbol, **kwargs)
+        
+        # 新增资金面数据
+        capital_data = self._get_capital_flow_data(symbol)
+        margin_data = self._get_margin_data(symbol) if self.is_a_share else None
+        sentiment_data = self._get_sentiment_data(symbol)
+        
+        return {
+            'technical': technical_data,
+            'capital_flow': capital_data,
+            'margin_trading': margin_data,
+            'sentiment': sentiment_data
+        }
+```
+
+### 7.2 修改报告生成器
+
+```python
+# 修改 src/report/pdf_generator.py
+class EnhancedPDFGenerator(PDFGenerator):
+    """增强版PDF生成器（包含资金面章节）"""
+    
+    def _add_capital_flow_section(self, story, analysis_data):
+        """添加资金面分析章节"""
+        # 获取资金面分析器
+        capital_analyzer = CapitalFlowAnalyzer()
+        
+        # 生成资金面分析
+        capital_analysis = capital_analyzer.analyze(analysis_data['capital_flow'])
+        
+        # 生成章节内容
+        section_generator = CapitalFlowReportSection()
+        section_content = section_generator.generate_section(
+            symbol=analysis_data['symbol'],
+            market_type=analysis_data['market'],
+            analysis_data=capital_analysis
+        )
+        
+        # 添加到报告
+        story.append(Paragraph("第四章：资金面分析", self.section_style))
+        story.append(section_content)
+        
+        # 添加资金面图表
+        chart_generator = CapitalFlowChartGenerator()
+        charts = chart_generator.generate_charts(capital_analysis)
+        
+        for chart in charts:
+            story.append(Image(chart, width=6*inch, height=4*inch))
+            story.append(Spacer(1, 10))
+```
+
+### 7.3 修改AI数据格式化器
+
+```python
+# 修改 src/report/json_generator.py
+class EnhancedJSONGenerator(JSONGenerator):
+    """增强版JSON生成器（包含资金面数据）"""
+    
+    def generate_ai_data(self, analysis_data):
+        """生成AI分析数据（包含资金面）"""
+        base_data = super().generate_ai_data(analysis_data)
+        
+        # 添加资金面数据
+        capital_data = {
+            'capital_flow': {
+                'net_inflow': analysis_data['capital_flow']['net_inflow'],
+                'main_force_ratio': analysis_data['capital_flow']['main_force_ratio'],
+                'flow_trend': analysis_data['capital_flow']['trend'],
+                'anomalies': analysis_data['capital_flow']['anomalies']
+            },
+            'sentiment': {
+                'overall_score': analysis_data['sentiment']['overall'],
+                'main_force_sentiment': analysis_data['sentiment']['main_force'],
+                'sentiment_state': analysis_data['sentiment']['state']
+            },
+            'signals': analysis_data.get('capital_signals', [])
+        }
+        
+        if analysis_data.get('margin_trading'):
+            capital_data['margin_trading'] = {
+                'margin_balance': analysis_data['margin_trading']['balance'],
+                'margin_ratio': analysis_data['margin_trading']['ratio'],
+                'trend': analysis_data['margin_trading']['trend']
+            }
+        
+        base_data['capital_analysis'] = capital_data
+        return base_data
+```
+
+## 八、资金面分析指标公式
+
+### 8.1 资金流指标公式
+
+```python
+# src/capital_flow/indicators/flow_indicators.py
+"""
+资金流指标计算公式
+"""
+
+def calculate_net_inflow_ratio(total_inflow, total_outflow):
+    """计算资金净流入率"""
+    if total_inflow + total_outflow == 0:
+        return 0
+    return (total_inflow - total_outflow) / (total_inflow + total_outflow) * 100
+
+def calculate_main_force_ratio(main_force_inflow, total_inflow):
+    """计算主力资金占比"""
+    if total_inflow == 0:
+        return 0
+    return main_force_inflow / total_inflow * 100
+
+def calculate_flow_momentum(flow_series, period=5):
+    """计算资金流动量"""
+    # 使用价格动量公式计算资金流动量
+    return flow_series.pct_change(period) * 100
+
+def calculate_flow_divergence(price_series, flow_series, window=20):
+    """计算资金流与价格背离度"""
+    price_return = price_series.pct_change(window)
+    flow_return = flow_series.pct_change(window)
+    return price_return - flow_return
+
+def calculate_concentration_index(large_order_vol, total_vol):
+    """计算资金集中度"""
+    if total_vol == 0:
+        return 0
+    return large_order_vol / total_vol * 100
+```
+
+### 8.2 资金情绪指标公式
+
+```python
+# src/capital_flow/indicators/sentiment_indicators.py
+"""
+资金情绪指标计算公式
+"""
+
+def calculate_composite_sentiment(indicators, weights):
+    """计算综合资金情绪指数"""
+    weighted_sum = sum(indicator * weight for indicator, weight in zip(indicators, weights))
+    return min(max(weighted_sum, 0), 100)  # 限制在0-100范围
+
+def calculate_sentiment_trend(sentiment_series, period=5):
+    """计算情绪趋势"""
+    if len(sentiment_series) < period:
+        return "insufficient_data"
+    
+    recent = sentiment_series[-period:].mean()
+    previous = sentiment_series[-(period*2):-period].mean()
+    
+    if recent > previous * 1.1:
+        return "strong_up"
+    elif recent > previous * 1.02:
+        return "up"
+    elif recent < previous * 0.9:
+        return "strong_down"
+    elif recent < previous * 0.98:
+        return "down"
+    else:
+        return "stable"
+
+def calculate_volatility_adjusted_sentiment(sentiment_score, volatility):
+    """计算波动率调整后的情绪得分"""
+    # 高波动率时降低情绪得分置信度
+    adjustment = 1 / (1 + volatility)
+    return sentiment_score * adjustment
+```
+
+## 九、实施计划
+
+### Phase 1: 基础数据获取（2-3天）
+1. 实现资金流向数据获取模块
+2. 实现融资融券数据获取（A股）
+3. 创建数据模型和配置文件
+
+### Phase 2: 分析引擎开发（3-4天）
+1. 实现资金流向分析器
+2. 实现资金情绪计算器
+3. 实现主力资金识别算法
+
+### Phase 3: 可视化开发（2-3天）
+1. 实现资金流向图表
+2. 实现情绪仪表板
+3. 实现热力图和桑基图
+
+### Phase 4: 报告集成（2天）
+1. 集成到主报告生成器
+2. 创建资金面报告章节
+3. 生成资金面信号
+
+### Phase 5: 测试优化（2天）
+1. 数据准确性测试
+2. 性能优化
+3. 用户体验优化
+
+## 十、注意事项
+
+1. **数据延迟处理**：资金面数据通常有15分钟到T+1的延迟，需要在报告中明确标注
+2. **市场差异**：A股和港股的资金面指标不同，需要分别处理
+3. **实时性要求**：盘中资金流向数据需要高频更新
+4. **数据质量**：资金面数据可能存在噪声，需要数据清洗和验证
+5. **合规性**：资金流向数据使用需符合相关法规
+
+这个资金面分析模块可以显著增强报告的价值，为投资者提供更全面的分析视角。

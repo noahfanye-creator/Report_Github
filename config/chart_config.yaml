@@ -1,0 +1,64 @@
+# 图表样式配置文件
+chart_style:
+  theme: "light"  # light/dark
+  colors:
+    bull_candle: "#00C853"    # 上涨K线颜色（绿色）
+    bear_candle: "#D32F2F"    # 下跌K线颜色（红色）
+    ma5: "#2196F3"            # MA5颜色（蓝色）
+    ma20: "#FF9800"           # MA20颜色（橙色）
+    ma60: "#9C27B0"           # MA60颜色（紫色）
+    macd: "#1976D2"           # MACD线颜色
+    signal: "#F44336"         # Signal线颜色
+    rsi: "#7B1FA2"            # RSI颜色
+    support: "#4CAF50"        # 支撑位颜色
+    resistance: "#F44336"     # 阻力位颜色
+  layout:
+    width: 1920
+    height: 1080
+    dpi: 100
+  annotations:
+    show_crossovers: true     # 显示金叉/死叉
+    show_volume_spikes: true  # 显示放量点
+    show_support_resistance: true  # 显示支撑/阻力位
+
+# AI数据配置
+ai_data:
+  precision:
+    price: 4      # 价格小数位数
+    indicator: 4  # 指标小数位数
+  include_fields:
+    - ohlcv
+    - indicators
+    - market_context
+    - derived_signals
+  output_format: "json"  # json/csv/parquet
+  compress: false        # 是否压缩为gzip
+
+# 数据处理配置
+data_processing:
+  timeframes:
+    - monthly
+    - weekly
+    - daily
+    - 60min
+    - 30min
+    - 5min
+  data_points: 100  # 每个周期保留的数据点数
+  indicators:
+    MA: [5, 20, 60]
+    MACD:
+      fast: 12
+      slow: 26
+      signal: 9
+    RSI:
+      period: 14
+    BB:
+      period: 20
+      std: 2
+
+# 输出目录配置
+output:
+  json_dir: "outputs/ai_data_output"
+  chart_dir: "outputs/chart_output"
+  report_dir: "outputs/reports"
+  consistency_report: "outputs/consistency_report.txt"

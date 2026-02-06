@@ -1,0 +1,840 @@
+# 股票技术分析报告系统 - 所需Python包和文件结构清单
+
+## 一、Python包依赖（requirements.txt）
+
+```txt
+# 核心数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# 技术指标计算
+ta-lib>=0.4.26  # 标准技术指标库
+pandas-ta>=0.3.14b0  # pandas技术分析扩展
+
+# 数据获取
+akshare>=1.10.0  # 主数据源（A股/港股）
+yfinance>=0.2.0  # 备用数据源（港股/美股）
+tushare>=1.2.89  # 可选数据源（需token）
+baostock>=0.8.80  # 可选（A股免费数据源）
+
+# 可视化
+matplotlib>=3.7.0
+mplfinance>=0.12.9a4  # K线图专用
+seaborn>=0.12.0  # 统计图表美化
+plotly>=5.15.0  # 可选，交互式图表
+
+# 报告生成
+reportlab>=4.0.0  # PDF生成
+Pillow>=10.0.0  # 图片处理
+python-docx>=0.8.11  # 可选，Word报告
+
+# 日期时间处理
+pytz>=2023.3
+python-dateutil>=2.8.2
+holidays>=0.30  # 节假日判断
+
+# 配置文件处理
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# 异步处理（可选）
+aiohttp>=3.8.0
+asyncio>=3.4.3
+
+# 其他工具
+tqdm>=4.65.0  # 进度条
+colorama>=0.4.6  # 彩色终端输出
+loguru>=0.7.0  # 日志管理
+```
+
+## 二、项目文件结构
+
+```
+stock_analysis_system/
+├── 📁 src/                            # 源代码目录
+│   ├── 📁 core/                       # 核心模块
+│   │   ├── __init__.py
+│   │   ├── main.py                    # 主程序入口
+│   │   ├── config_manager.py          # 配置管理
+│   │   └── system_monitor.py          # 系统监控
+│   │
+│   ├── 📁 market/                     # 市场相关模块
+│   │   ├── __init__.py
+│   │   ├── market_detector.py         # 市场识别
+│   │   ├── trading_time.py            # 交易时间判断
+│   │   ├── market_rules.py            # 市场规则定义
+│   │   └── holidays_calendar.py       # 节假日日历
+│   │
+│   ├── 📁 data/                       # 数据模块
+│   │   ├── __init__.py
+│   │   ├── data_acquirer.py           # 数据获取器
+│   │   ├── data_cleaner.py            # 数据清洗
+│   │   ├── data_validator.py          # 数据验证
+│   │   ├── data_source_factory.py     # 数据源工厂
+│   │   ├── sources/                   # 具体数据源
+│   │   │   ├── akshare_source.py
+│   │   │   ├── yfinance_source.py
+│   │   │   ├── tushare_source.py
+│   │   │   └── base_source.py
+│   │   └── realtime_handler.py        # 实时数据处理
+│   │
+│   ├── 📁 indicators/                 # 技术指标模块
+│   │   ├── __init__.py
+│   │   ├── calculator.py              # 指标计算器
+│   │   ├── signals_generator.py       # 信号生成器
+│   │   ├── types/                     # 指标类型
+│   │   │   ├── trend_indicators.py
+│   │   │   ├── momentum_indicators.py
+│   │   │   ├── volatility_indicators.py
+│   │   │   ├── volume_indicators.py
+│   │   │   └── hk_specific.py        # 港股特有指标
+│   │   └── formulas/                  # 指标公式
+│   │       ├── ma_formulas.py
+│   │       ├── macd_formulas.py
+│   │       ├── rsi_formulas.py
+│   │       └── fibonacci.py
+│   │
+│   ├── 📁 visualization/              # 可视化模块
+│   │   ├── __init__.py
+│   │   ├── chart_factory.py           # 图表工厂
+│   │   ├── chart_renderer.py          # 图表渲染器
+│   │   ├── chart_styles.py            # 图表样式
+│   │   ├── templates/                 # 图表模板
+│   │   │   ├── realtime_template.py
+│   │   │   ├── closing_template.py
+│   │   │   ├── post_market_template.py
+│   │   │   └── multi_timeframe.py
+│   │   └── annotations/               # 标注工具
+│   │       ├── fibonacci_annotator.py
+│   │       ├── trendline_annotator.py
+│   │       └── signal_marker.py
+│   │
+│   ├── 📁 report/                     # 报告生成模块
+│   │   ├── __init__.py
+│   │   ├── report_factory.py          # 报告工厂
+│   │   ├── pdf_generator.py           # PDF生成器
+│   │   ├── json_generator.py          # JSON生成器
+│   │   ├── templates/                 # 报告模板
+│   │   │   ├── base_template.py
+│   │   │   ├── realtime_report.py
+│   │   │   ├── closing_report.py
+│   │   │   └── post_market_report.py
+│   │   └── components/                # 报告组件
+│   │       ├── cover_page.py
+│   │       ├── data_quality_section.py
+│   │       ├── indicators_section.py
+│   │       └── charts_section.py
+│   │
+│   ├── 📁 models/                     # 数据模型
+│   │   ├── __init__.py
+│   │   ├── stock_data.py              # 股票数据模型
+│   │   ├── indicators.py              # 指标数据模型
+│   │   ├── signals.py                 # 信号模型
+│   │   └── report_data.py             # 报告数据模型
+│   │
+│   └── 📁 utils/                      # 工具模块
+│       ├── __init__.py
+│       ├── date_utils.py              # 日期工具
+│       ├── file_utils.py              # 文件工具
+│       ├── logger.py                  # 日志工具
+│       ├── progress_bar.py            # 进度条
+│       └── exceptions.py              # 异常处理
+│
+├── 📁 config/                         # 配置文件目录
+│   ├── __init__.py
+│   ├── config.yaml                    # 主配置文件
+│   ├── market_rules.yaml              # 市场规则配置
+│   ├── indicators_config.yaml         # 指标配置
+│   ├── chart_styles.yaml              # 图表样式配置
+│   └── report_templates.yaml          # 报告模板配置
+│
+├── 📁 data/                           # 数据存储目录
+│   ├── 📁 cache/                      # 缓存数据
+│   │   ├── historical/                # 历史数据缓存
+│   │   └── realtime/                  # 实时数据缓存
+│   ├── 📁 holidays/                   # 节假日数据
+│   │   ├── china_holidays.csv
+│   │   ├── hk_holidays.csv
+│   │   └── us_holidays.csv
+│   └── 📁 symbols/                    # 股票代码映射
+│       ├── a_shares.csv
+│       ├── hk_shares.csv
+│       └── us_shares.csv
+│
+├── 📁 outputs/                        # 输出目录（自动生成）
+│   ├── 📁 reports/                    # PDF报告
+│   │   ├── realtime/                  # 实时报告
+│   │   ├── closing/                   # 收盘报告
+│   │   └── post_market/               # 盘后报告
+│   ├── 📁 charts/                     # 图表文件
+│   │   ├── daily/
+│   │   ├── weekly/
+│   │   └── realtime/
+│   ├── 📁 json_data/                  # JSON数据
+│   │   ├── for_ai_analysis/
+│   │   └── raw_data/
+│   ├── 📁 logs/                       # 日志文件
+│   │   ├── system.log
+│   │   ├── data_acquisition.log
+│   │   └── report_generation.log
+│   └── 📁 temp/                       # 临时文件
+│
+├── 📁 tests/                          # 测试目录
+│   ├── __init__.py
+│   ├── test_market_detector.py
+│   ├── test_data_acquirer.py
+│   ├── test_indicators.py
+│   ├── test_chart_renderer.py
+│   └── test_report_generator.py
+│
+├── 📁 docs/                           # 文档目录
+│   ├── API.md                         # API文档
+│   ├── USER_GUIDE.md                  # 用户指南
+│   ├── DEVELOPER_GUIDE.md             # 开发者指南
+│   └── EXAMPLES.md                    # 使用示例
+│
+├── 📁 scripts/                        # 脚本目录
+│   ├── install.sh                     # 安装脚本
+│   ├── run_realtime.sh                # 实时运行脚本
+│   ├── batch_process.py               # 批量处理脚本
+│   └── cleanup.py                     # 清理脚本
+│
+├── 📁 examples/                       # 示例目录
+│   ├── basic_usage.py                 # 基础使用示例
+│   ├── realtime_example.py            # 实时分析示例
+│   ├── batch_analysis.py              # 批量分析示例
+│   └── custom_indicators.py           # 自定义指标示例
+│
+├── main.py                           # 程序入口（快捷方式）
+├── requirements.txt                  # Python依赖包
+├── requirements-dev.txt              # 开发环境依赖
+├── pyproject.toml                    # 项目配置
+├── setup.py                          # 安装配置
+├── .env.example                      # 环境变量示例
+├── .gitignore                       # Git忽略文件
+├── README.md                        # 项目说明
+└── LICENSE                          # 许可证
+```
+
+## 三、核心Python文件详细说明
+
+### 1. 主程序入口
+```python
+# src/core/main.py
+"""
+系统主程序入口
+包含：命令行接口、交互模式、批量处理等
+"""
+```
+
+### 2. 配置管理器
+```python
+# src/core/config_manager.py
+"""
+配置管理系统
+加载、管理、更新所有配置文件
+支持环境变量覆盖
+"""
+```
+
+### 3. 市场识别器
+```python
+# src/market/market_detector.py
+"""
+市场自动识别
+输入股票代码 → 输出市场类型
+支持：A股、港股、美股识别
+"""
+```
+
+### 4. 交易时间判断
+```python
+# src/market/trading_time.py
+"""
+交易状态判断
+判断当前是否为交易日、交易时间
+计算距收盘时间、午间休市判断
+"""
+```
+
+### 5. 数据获取器
+```python
+# src/data/data_acquirer.py
+"""
+统一数据获取接口
+自动选择数据源
+获取历史数据 + 实时数据
+数据缓存管理
+"""
+```
+
+### 6. 指标计算器
+```python
+# src/indicators/calculator.py
+"""
+技术指标计算核心
+计算所有标准技术指标
+实时指标更新
+港股特有指标计算
+"""
+```
+
+### 7. 图表渲染器
+```python
+# src/visualization/chart_renderer.py
+"""
+专业图表生成
+多时间框架图表
+实时/收盘图表区分
+技术指标叠加
+"""
+```
+
+### 8. PDF报告生成器
+```python
+# src/report/pdf_generator.py
+"""
+PDF报告生成核心
+多类型报告生成（实时/收盘/盘后）
+报告组件组装
+PDF样式控制
+"""
+```
+
+### 9. JSON数据生成器
+```python
+# src/report/json_generator.py
+"""
+结构化JSON数据生成
+AI分析专用格式
+数据标准化输出
+"""
+```
+
+## 四、关键配置文件
+
+### 1. 主配置文件（config.yaml）
+```yaml
+# config/config.yaml
+system:
+  name: "股票技术分析报告系统"
+  version: "1.0.0"
+  debug: false
+  language: "zh"  # 语言：zh/en
+
+data_sources:
+  primary: "akshare"
+  backup: "yfinance"
+  cache_enabled: true
+  cache_days: 7
+
+markets:
+  a_share:
+    enabled: true
+    data_source: "akshare"
+    currency: "CNY"
+  hk_share:
+    enabled: true
+    data_source: "akshare"  # 主用，yfinance备用
+    currency: "HKD"
+  us_share:
+    enabled: false  # 暂不支持
+    data_source: "yfinance"
+    currency: "USD"
+
+indicators:
+  # 趋势指标
+  moving_averages: [5, 10, 20, 60, 120, 250]
+  macd_params: [12, 26, 9]
+  bollinger_params: [20, 2]
+  
+  # 动量指标
+  rsi_period: 14
+  kdj_params: [9, 3, 3]
+  cci_period: 20
+  
+  # 波动率指标
+  atr_period: 14
+  
+  # 港股特有指标
+  hk_specific_enabled: true
+
+report:
+  output_dir: "./outputs"
+  auto_open: false  # 生成后自动打开
+  default_format: "pdf"  # pdf/json/both
+  quality: "high"  # high/medium/low
+  
+  realtime:
+    update_interval: 300  # 秒
+    chart_refresh: 60  # 秒
+    
+  closing:
+    generate_after_close: true
+    delay_minutes: 5  # 收盘后延迟生成
+    
+  post_market:
+    generate_on_holidays: true
+
+charts:
+  style: "yahoo"  # yahoo/classic/binance
+  figure_size: [16, 12]
+  dpi: 300
+  save_format: "png"  # png/jpg/pdf/svg
+  
+  realtime:
+    show_minute_chart: true
+    update_animation: true
+    
+  closing:
+    show_multiple_timeframes: true
+    include_weekly: true
+    include_monthly: true
+
+logging:
+  level: "INFO"  # DEBUG/INFO/WARNING/ERROR
+  file: "./outputs/logs/system.log"
+  max_size: "10MB"  # 日志文件最大大小
+  backup_count: 5  # 保留的日志文件数量
+
+performance:
+  max_workers: 4  # 最大并发数
+  timeout_seconds: 30  # 超时时间
+  memory_limit_mb: 1024  # 内存限制
+```
+
+### 2. 市场规则配置（market_rules.yaml）
+```yaml
+# config/market_rules.yaml
+A股:
+  market_code: "A"
+  exchange_codes: ["SH", "SZ", "BJ"]
+  currency: "CNY"
+  trading_days_per_year: 245
+  trading_hours:
+    regular:
+      - start: "09:30"
+        end: "11:30"
+      - start: "13:00"
+        end: "15:00"
+    pre_market:  # 集合竞价
+      - start: "09:15"
+        end: "09:25"
+    post_market:  # 盘后交易
+      - start: "15:05"
+        end: "15:30"
+  lunch_break:
+    start: "11:30"
+    end: "13:00"
+  settlement_days: "T+1"
+
+港股:
+  market_code: "HK"
+  exchange_codes: ["HK"]
+  currency: "HKD"
+  trading_days_per_year: 250
+  trading_hours:
+    regular:
+      - start: "09:30"
+        end: "12:00"
+      - start: "13:00"
+        end: "16:00"
+    pre_market:  # 开市前时段
+      - start: "09:00"
+        end: "09:30"
+    post_market:  # 收市竞价
+      - start: "16:00"
+        end: "16:10"
+  lunch_break:
+    start: "12:00"
+    end: "13:00"
+  settlement_days: "T+2"
+
+美股:
+  market_code: "US"
+  exchange_codes: ["NYSE", "NASDAQ"]
+  currency: "USD"
+  trading_days_per_year: 252
+  trading_hours:
+    regular:
+      - start: "09:30"
+        end: "16:00"
+    pre_market:
+      - start: "04:00"
+        end: "09:30"
+    post_market:
+      - start: "16:00"
+        end: "20:00"
+  timezone: "America/New_York"
+```
+
+### 3. 指标配置（indicators_config.yaml）
+```yaml
+# config/indicators_config.yaml
+# 趋势指标
+trend:
+  moving_averages:
+    - name: "MA5"
+      period: 5
+      color: "#FF6B6B"
+    - name: "MA10"
+      period: 10
+      color: "#4ECDC4"
+    - name: "MA20"
+      period: 20
+      color: "#45B7D1"
+    - name: "MA60"
+      period: 60
+      color: "#95A5A6"
+      
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+    colors:
+      macd_line: "blue"
+      signal_line: "red"
+      histogram_up: "green"
+      histogram_down: "red"
+
+# 动量指标
+momentum:
+  rsi:
+    period: 14
+    overbought: 70
+    oversold: 30
+    color: "purple"
+    
+  kdj:
+    period: 9
+    smooth_k: 3
+    smooth_d: 3
+    colors:
+      k_line: "blue"
+      d_line: "red"
+      j_line: "green"
+
+# 波动率指标
+volatility:
+  bollinger_bands:
+    period: 20
+    std_dev: 2
+    color: "gray"
+    alpha: 0.2
+    
+  atr:
+    period: 14
+    color: "orange"
+
+# 成交量指标
+volume:
+  volume_ma:
+    periods: [5, 20]
+    colors: ["blue", "orange"]
+    
+  obv:
+    enabled: true
+    color: "purple"
+
+# 港股特有指标
+hk_specific:
+  volatility_index:
+    period: 20
+    color: "#E74C3C"
+    
+  money_flow:
+    period: 20
+    colors:
+      inflow: "#27AE60"
+      outflow: "#E74C3C"
+      
+  block_trade_ratio:
+    threshold: 2.0  # 2倍标准差为大单
+```
+
+### 4. 环境变量文件（.env.example）
+```bash
+# .env.example
+# 数据源API密钥
+TUSHARE_TOKEN=your_tushare_token_here
+AKSHARE_USERNAME=optional
+AKSHARE_PASSWORD=optional
+
+# 系统配置
+OUTPUT_DIR=./outputs
+LOG_LEVEL=INFO
+CACHE_ENABLED=true
+CACHE_DIR=./data/cache
+
+# 网络配置
+HTTP_PROXY=http://your_proxy:port
+HTTPS_PROXY=https://your_proxy:port
+REQUEST_TIMEOUT=30
+
+# 性能配置
+MAX_WORKERS=4
+MEMORY_LIMIT_MB=1024
+CHART_DPI=300
+
+# 报告配置
+REPORT_AUTO_OPEN=false
+REPORT_QUALITY=high
+LANGUAGE=zh
+
+# 开发配置
+DEBUG=false
+TEST_MODE=false
+MOCK_DATA=false
+```
+
+## 五、运行脚本
+
+### 1. 安装脚本（install.sh）
+```bash
+#!/bin/bash
+# scripts/install.sh
+
+echo "安装股票技术分析报告系统..."
+
+# 创建虚拟环境
+python3 -m venv venv
+source venv/bin/activate
+
+# 安装依赖
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 创建必要目录
+mkdir -p data/cache
+mkdir -p outputs/reports
+mkdir -p outputs/charts
+mkdir -p outputs/json_data
+mkdir -p outputs/logs
+
+# 复制配置文件
+cp .env.example .env
+echo "请编辑 .env 文件配置API密钥"
+
+echo "安装完成！"
+echo "激活虚拟环境: source venv/bin/activate"
+echo "运行系统: python main.py"
+```
+
+### 2. 主程序入口（main.py）
+```python
+#!/usr/bin/env python3
+# main.py
+
+"""
+股票技术分析报告系统 - 主程序入口
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# 添加src目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+from core.main import StockAnalysisSystem
+
+def main():
+    """主函数"""
+    print("=" * 60)
+    print("股票技术分析报告系统")
+    print("=" * 60)
+    
+    # 获取股票代码
+    if len(sys.argv) > 1:
+        symbol = sys.argv[1]
+    else:
+        symbol = input("请输入股票代码（如：00700 或 600519.SH）: ").strip()
+    
+    if not symbol:
+        print("错误：未提供股票代码")
+        return
+    
+    # 创建系统实例
+    system = StockAnalysisSystem()
+    
+    try:
+        # 运行分析
+        result = system.analyze_stock(symbol)
+        
+        # 显示结果
+        print("\n" + "=" * 60)
+        print("分析完成！")
+        print("=" * 60)
+        print(f"股票: {result.get('symbol', 'N/A')}")
+        print(f"市场: {result.get('market', 'N/A')}")
+        print(f"报告类型: {result.get('report_type', 'N/A')}")
+        print(f"报告文件: {result.get('report_path', 'N/A')}")
+        print(f"数据截止: {result.get('data_cutoff', 'N/A')}")
+        print("=" * 60)
+        
+    except Exception as e:
+        print(f"分析失败: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+## 六、开发环境配置
+
+### 1. 开发依赖（requirements-dev.txt）
+```txt
+# 测试框架
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+
+# 代码质量
+black>=23.9.0
+flake8>=6.0.0
+mypy>=1.5.0
+isort>=5.12.0
+
+# 文档生成
+sphinx>=7.2.0
+sphinx-rtd-theme>=1.3.0
+
+# 开发工具
+ipython>=8.15.0
+jupyter>=1.0.0
+pre-commit>=3.5.0
+
+# 调试工具
+debugpy>=1.8.0
+```
+
+### 2. 预提交钩子配置（.pre-commit-config.yaml）
+```yaml
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: https://github.com/psf/black
+    rev: 23.9.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.0.0
+    hooks:
+      - id: flake8
+        args: ["--max-line-length=100"]
+```
+
+## 七、关键公式文件
+
+### 1. 移动平均线公式（formulas/ma_formulas.py）
+```python
+# src/indicators/formulas/ma_formulas.py
+"""
+移动平均线计算公式
+"""
+
+def calculate_sma(prices, period):
+    """简单移动平均线"""
+    return prices.rolling(window=period).mean()
+
+def calculate_ema(prices, period):
+    """指数移动平均线"""
+    return prices.ewm(span=period, adjust=False).mean()
+
+def calculate_wma(prices, period):
+    """加权移动平均线"""
+    weights = np.arange(1, period + 1)
+    return prices.rolling(window=period).apply(
+        lambda x: np.dot(x, weights) / weights.sum(), raw=True
+    )
+```
+
+### 2. MACD公式（formulas/macd_formulas.py）
+```python
+# src/indicators/formulas/macd_formulas.py
+"""
+MACD计算公式
+"""
+
+def calculate_macd(prices, fast_period=12, slow_period=26, signal_period=9):
+    """计算MACD指标"""
+    ema_fast = calculate_ema(prices, fast_period)
+    ema_slow = calculate_ema(prices, slow_period)
+    
+    macd_line = ema_fast - ema_slow
+    signal_line = calculate_ema(macd_line, signal_period)
+    histogram = macd_line - signal_line
+    
+    return macd_line, signal_line, histogram
+```
+
+### 3. RSI公式（formulas/rsi_formulas.py）
+```python
+# src/indicators/formulas/rsi_formulas.py
+"""
+RSI计算公式
+"""
+
+def calculate_rsi(prices, period=14):
+    """计算相对强弱指数"""
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    return rsi
+```
+
+### 4. 斐波那契公式（formulas/fibonacci.py）
+```python
+# src/indicators/formulas/fibonacci.py
+"""
+斐波那契回撤和扩展位计算
+"""
+
+def calculate_fibonacci_retracement(high, low):
+    """计算斐波那契回撤位"""
+    price_range = high - low
+    
+    levels = {
+        '0.0%': low,
+        '23.6%': high - 0.236 * price_range,
+        '38.2%': high - 0.382 * price_range,
+        '50.0%': high - 0.5 * price_range,
+        '61.8%': high - 0.618 * price_range,
+        '78.6%': high - 0.786 * price_range,
+        '100.0%': high,
+    }
+    
+    return levels
+
+def calculate_fibonacci_extensions(high, low):
+    """计算斐波那契扩展位"""
+    price_range = high - low
+    
+    extensions = {
+        '127.2%': low + 1.272 * price_range,
+        '161.8%': low + 1.618 * price_range,
+        '261.8%': low + 2.618 * price_range,
+        '423.6%': low + 4.236 * price_range,
+    }
+    
+    return extensions
+```
+
+这个完整的文件结构包含了所有需要的Python包和文件，可以基于这个结构来开发股票技术分析报告系统。

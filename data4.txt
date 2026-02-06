@@ -1,0 +1,1695 @@
+# 港股数据接入方案
+
+我将为您设计完整的港股数据接入系统，支持与A股统一的技术指标计算和可视化流程。
+
+## 一、扩展的数据采集系统（支持A股+港股）
+
+### 1. 统一数据源管理器
+
+```python
+"""
+统一市场数据采集系统 - 支持A股、港股、美股
+"""
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import akshare as ak
+import tushare as ts
+import yfinance as yf
+import baostock as bs
+from typing import Dict, List, Tuple, Optional, Union
+import warnings
+warnings.filterwarnings('ignore')
+
+class UnifiedMarketDataSystem:
+    """统一市场数据采集系统（A股 + 港股 + 美股）"""
+    
+    def __init__(self, data_sources: List[str] = ['akshare', 'yfinance', 'tushare']):
+        """
+        初始化多市场数据源
+        
+        :param data_sources: 数据源优先级列表
+        """
+        self.data_sources = data_sources
+        self.ts_pro = None  # Tushare Pro实例
+        self.bs_login = False  # Baostock登录状态
+        
+        # 市场代码映射
+        self.market_mapping = {
+            'A股': ['SH', 'SZ', 'BJ', 'sh', 'sz', 'bj'],
+            '港股': ['HK', 'hk', '.HK'],
+            '美股': ['US', 'us', '.US']
+        }
+        
+        self._initialize_data_sources()
+    
+    def _initialize_data_sources(self):
+        """初始化各数据源API"""
+        try:
+            # Tushare Pro
+            if 'tushare' in self.data_sources:
+                ts.set_token('你的tushare token')  # 需要申请
+                self.ts_pro = ts.pro_api()
+            
+            # Baostock
+            if 'baostock' in self.data_sources:
+                lg = bs.login()
+                if lg.error_code == '0':
+                    self.bs_login = True
+                    print("Baostock登录成功")
+                else:
+                    print(f"Baostock登录失败: {lg.error_msg}")
+                    
+        except Exception as e:
+            print(f"数据源初始化失败: {e}")
+    
+    def get_market_data(self, 
+                       symbol: str, 
+                       start_date: str, 
+                       end_date: str,
+                       market: str = None,
+                       data_type: str = 'daily',
+                       adjust: str = 'hfq') -> pd.DataFrame:
+        """
+        获取多市场股票数据
+        
+        :param symbol: 股票代码
+        :param market: 市场类型 ('A股', '港股', '美股')，自动检测
+        :param start_date: 开始日期 'YYYY-MM-DD'
+        :param end_date: 结束日期 'YYYY-MM-DD'
+        :param data_type: 数据类型 'daily', 'weekly', 'monthly', '5min', '15min', '60min'
+        :param adjust: 复权类型 'hfq'(后复权), 'qfq'(前复权), None(不复权)
+        :return: 标准化的DataFrame
+        """
+        # 自动检测市场类型
+        if market is None:
+            market = self.detect_market(symbol)
+        
+        print(f"获取 {market} {symbol} 数据 ({start_date} 至 {end_date})")
+        
+        data = None
+        
+        # 根据不同市场使用不同数据源
+        try:
+            if market == 'A股':
+                data = self._get_a_share_data(symbol, start_date, end_date, data_type, adjust)
+            elif market == '港股':
+                data = self._get_hk_share_data(symbol, start_date, end_date, data_type, adjust)
+            elif market == '美股':
+                data = self._get_us_share_data(symbol, start_date, end_date, data_type)
+            else:
+                raise ValueError(f"不支持的市场类型: {market}")
+                
+        except Exception as e:
+            print(f"获取{market}数据失败: {e}")
+            
+            # 尝试备用数据源
+            if market == '港股':
+                print("尝试使用yfinance作为备用数据源...")
+                data = self._get_hk_data_yfinance(symbol, start_date, end_date, data_type)
+        
+        if data is None or data.empty:
+            raise ValueError(f"无法获取 {market} {symbol} 的数据")
+        
+        # 数据标准化处理
+        data = self._standardize_data(data, symbol, market)
+        
+        return data
+    
+    def detect_market(self, symbol: str) -> str:
+        """
+        自动检测市场类型
+        
+        :param symbol: 股票代码
+        :return: 市场类型 ('A股', '港股', '美股')
+        """
+        symbol_upper = symbol.upper()
+        
+        # 检测港股（常见模式）
+        hk_patterns = ['.HK', 'HK', '0', '1', '2', '3', '6', '8']  # 港股代码通常以0-9开头
+        if any(pattern in symbol_upper for pattern in ['.HK', 'HK']):
+            return '港股'
+        
+        # 检测A股
+        if any(pattern in symbol_upper for pattern in ['.SH', '.SZ', '.BJ', 'SH', 'SZ', 'BJ']):
+            return 'A股'
+        if symbol_upper.startswith(('6', '0', '3', '688', '689', '8')):
+            return 'A股'
+        
+        # 检测美股
+        if any(pattern in symbol_upper for pattern in ['.US', '.NASDAQ', '.NYSE', 'US']):
+            return '美股'
+        
+        # 默认使用yfinance检测
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            if 'country' in info:
+                if info['country'] == 'Hong Kong':
+                    return '港股'
+                elif info['country'] == 'United States':
+                    return '美股'
+                elif info['country'] == 'China':
+                    return 'A股'
+        except:
+            pass
+        
+        # 默认认为是港股（因为港股代码格式多样）
+        print(f"无法自动检测市场，默认视为港股: {symbol}")
+        return '港股'
+    
+    def _get_a_share_data(self, symbol: str, start_date: str, end_date: str,
+                         data_type: str, adjust: str) -> pd.DataFrame:
+        """获取A股数据"""
+        data = None
+        
+        for source in self.data_sources:
+            try:
+                if source == 'akshare':
+                    data = self._get_a_from_akshare(symbol, start_date, end_date, data_type, adjust)
+                elif source == 'tushare' and self.ts_pro is not None:
+                    data = self._get_a_from_tushare(symbol, start_date, end_date, data_type, adjust)
+                elif source == 'baostock' and self.bs_login:
+                    data = self._get_a_from_baostock(symbol, start_date, end_date, data_type, adjust)
+                elif source == 'yfinance':
+                    data = self._get_a_from_yfinance(symbol, start_date, end_date, data_type)
+                
+                if data is not None and not data.empty:
+                    break
+            except Exception as e:
+                print(f"A股数据源 {source} 失败: {e}")
+                continue
+        
+        return data
+    
+    def _get_hk_share_data(self, symbol: str, start_date: str, end_date: str,
+                          data_type: str, adjust: str) -> pd.DataFrame:
+        """获取港股数据"""
+        data = None
+        
+        # 清理港股代码格式
+        hk_symbol = self._clean_hk_symbol(symbol)
+        print(f"获取港股数据，代码: {hk_symbol}")
+        
+        for source in self.data_sources:
+            try:
+                if source == 'akshare':
+                    data = self._get_hk_from_akshare(hk_symbol, start_date, end_date, data_type)
+                elif source == 'yfinance':
+                    data = self._get_hk_from_yfinance(hk_symbol, start_date, end_date, data_type)
+                elif source == 'tushare' and self.ts_pro is not None:
+                    data = self._get_hk_from_tushare(hk_symbol, start_date, end_date, data_type)
+                
+                if data is not None and not data.empty:
+                    break
+            except Exception as e:
+                print(f"港股数据源 {source} 失败: {e}")
+                continue
+        
+        return data
+    
+    def _clean_hk_symbol(self, symbol: str) -> str:
+        """清理港股代码格式"""
+        # 移除空格和点
+        symbol = symbol.strip().replace('.', '').upper()
+        
+        # 移除HK后缀（如果有）
+        if symbol.endswith('HK'):
+            symbol = symbol[:-2]
+        
+        # 港股代码通常是5位数字，不足5位前面补0
+        if symbol.isdigit() and len(symbol) < 5:
+            symbol = symbol.zfill(5)
+        
+        return symbol
+    
+    def _get_hk_from_akshare(self, symbol: str, start_date: str, end_date: str,
+                           data_type: str) -> pd.DataFrame:
+        """从AKShare获取港股数据"""
+        try:
+            # AKShare港股日线数据
+            if data_type == 'daily':
+                df = ak.stock_hk_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', ''),
+                    adjust=""
+                )
+                
+                # 重命名列
+                df = df.rename(columns={
+                    '日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'amount',
+                    '涨跌幅': 'pct_change'
+                })
+                
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                
+                return df
+                
+        except Exception as e:
+            print(f"AKShare港股数据获取失败: {e}")
+            return None
+    
+    def _get_hk_from_yfinance(self, symbol: str, start_date: str, end_date: str,
+                            data_type: str) -> pd.DataFrame:
+        """从Yahoo Finance获取港股数据"""
+        try:
+            # 添加.HK后缀
+            yf_symbol = f"{symbol}.HK"
+            
+            stock = yf.Ticker(yf_symbol)
+            
+            if data_type == 'daily':
+                df = stock.history(start=start_date, end=end_date, interval='1d')
+            elif data_type == 'weekly':
+                df = stock.history(start=start_date, end=end_date, interval='1wk')
+            elif data_type == 'monthly':
+                df = stock.history(start=start_date, end=end_date, interval='1mo')
+            elif data_type == '60min':
+                # 获取最近60天的60分钟数据
+                recent_start = (datetime.strptime(end_date, '%Y-%m-%d') - 
+                              timedelta(days=60)).strftime('%Y-%m-%d')
+                df = stock.history(start=recent_start, end=end_date, interval='60m')
+            else:
+                return None
+            
+            # 重命名列
+            df = df.rename(columns={
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+            
+            # 计算成交额（港币）
+            if 'amount' not in df.columns:
+                df['amount'] = df['close'] * df['volume']
+            
+            return df
+            
+        except Exception as e:
+            print(f"Yahoo Finance港股数据获取失败: {e}")
+            return None
+    
+    def _get_hk_data_yfinance(self, symbol: str, start_date: str, end_date: str,
+                            data_type: str) -> pd.DataFrame:
+        """使用Yahoo Finance作为港股备用数据源"""
+        return self._get_hk_from_yfinance(symbol, start_date, end_date, data_type)
+    
+    def _get_hk_from_tushare(self, symbol: str, start_date: str, end_date: str,
+                           data_type: str) -> pd.DataFrame:
+        """从Tushare获取港股数据（需要Pro版）"""
+        if self.ts_pro is None:
+            return None
+        
+        try:
+            # Tushare港股代码格式：股票代码.HK
+            ts_code = f"{symbol}.HK"
+            
+            if data_type == 'daily':
+                df = self.ts_pro.hk_daily(
+                    ts_code=ts_code,
+                    start_date=start_date.replace('-', ''),
+                    end_date=end_date.replace('-', '')
+                )
+                
+                if df is not None and not df.empty:
+                    df = df.rename(columns={
+                        'trade_date': 'date',
+                        'open': 'open',
+                        'close': 'close',
+                        'high': 'high',
+                        'low': 'low',
+                        'vol': 'volume',
+                        'amount': 'amount'
+                    })
+                    
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    df.sort_index(inplace=True)
+                    
+                    return df
+                    
+        except Exception as e:
+            print(f"Tushare港股数据获取失败: {e}")
+            return None
+        
+        return None
+    
+    def _standardize_data(self, df: pd.DataFrame, symbol: str, market: str) -> pd.DataFrame:
+        """
+        标准化数据格式（多市场统一）
+        
+        :param df: 原始数据
+        :param symbol: 股票代码
+        :param market: 市场类型
+        :return: 标准化的DataFrame
+        """
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        
+        # 检查必要列
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"数据缺少必要列: {col}")
+        
+        # 确保数据类型正确
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # 计算成交额（如果没有）
+        if 'amount' not in df.columns:
+            df['amount'] = df['close'] * df['volume']
+        
+        # 计算涨跌幅
+        if 'pct_change' not in df.columns:
+            df['pct_change'] = df['close'].pct_change() * 100
+        
+        # 添加元数据
+        df['symbol'] = symbol
+        df['market'] = market
+        
+        # 确保索引是日期时间类型
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        
+        # 排序
+        df.sort_index(inplace=True)
+        
+        # 去除重复和无效数据
+        df = df[~df.index.duplicated(keep='first')]
+        df = df.replace([np.inf, -np.inf], np.nan)
+        df = df.dropna(subset=required_columns, how='all')
+        
+        # 填充缺失值
+        for col in required_columns:
+            if df[col].isnull().any():
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
+        
+        return df
+    
+    def get_multi_market_data(self, 
+                            symbols: List[str],
+                            start_date: str,
+                            end_date: str,
+                            data_type: str = 'daily') -> Dict[str, pd.DataFrame]:
+        """
+        批量获取多市场数据
+        
+        :param symbols: 股票代码列表
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :param data_type: 数据类型
+        :return: 字典 {股票代码: DataFrame}
+        """
+        results = {}
+        
+        for symbol in symbols:
+            try:
+                data = self.get_market_data(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    data_type=data_type
+                )
+                results[symbol] = data
+                print(f"✓ 已获取 {symbol}")
+                
+            except Exception as e:
+                print(f"✗ 获取 {symbol} 失败: {e}")
+                results[symbol] = None
+        
+        return results
+    
+    def get_hk_index_data(self, index_code: str = 'HSI',
+                         start_date: str = '2020-01-01',
+                         end_date: str = '2026-01-26') -> pd.DataFrame:
+        """
+        获取港股指数数据
+        
+        :param index_code: 指数代码
+            HSI: 恒生指数
+            HSCEI: 恒生中国企业指数
+            HSTECH: 恒生科技指数
+        :return: 指数数据DataFrame
+        """
+        index_map = {
+            'HSI': '^HSI',      # 恒生指数
+            'HSCEI': '^HSCE',   # 恒生国企指数
+            'HSTECH': '^HSTECH' # 恒生科技指数
+        }
+        
+        yf_symbol = index_map.get(index_code, '^HSI')
+        
+        try:
+            stock = yf.Ticker(yf_symbol)
+            df = stock.history(start=start_date, end=end_date)
+            
+            df = df.rename(columns={
+                'Open': 'open',
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+            
+            df['symbol'] = index_code
+            df['market'] = '港股指数'
+            
+            return df
+            
+        except Exception as e:
+            print(f"获取港股指数数据失败: {e}")
+            return None
+```
+
+### 2. 港股专用技术指标计算器
+
+```python
+class HKMarketIndicatorCalculator:
+    """
+    港股市场技术指标计算器
+    包含港股特有指标和调整
+    """
+    
+    def __init__(self):
+        # 港股特有参数
+        self.hk_specific_params = {
+            'trading_days_per_year': 250,  # 港股年交易日
+            'market_hours': {
+                'pre_market': '09:00-09:30',
+                'main_session': '09:30-12:00,13:00-16:00',
+                'post_market': '16:00-17:00'
+            }
+        }
+    
+    def calculate_hk_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算港股专用技术指标
+        
+        :param data: 港股数据
+        :return: 包含港股指标的数据
+        """
+        df = data.copy()
+        
+        # 基础技术指标（与A股共享）
+        base_calculator = TechnicalIndicatorCalculator(df)
+        df = base_calculator.calculate_all_indicators()
+        
+        # 港股特有指标
+        df = self._add_hk_specific_indicators(df)
+        
+        return df
+    
+    def _add_hk_specific_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """添加港股特有指标"""
+        
+        # 1. 港股波动率指标（考虑港股波动特点）
+        if 'close' in df.columns:
+            returns = df['close'].pct_change()
+            
+            # 港股历史波动率（年化）
+            df['HK_HV_20'] = returns.rolling(20).std() * np.sqrt(self.hk_specific_params['trading_days_per_year'])
+            df['HK_HV_60'] = returns.rolling(60).std() * np.sqrt(self.hk_specific_params['trading_days_per_year'])
+            
+            # 港股波动率指数（模拟）
+            df['HK_VOL_INDEX'] = self._calculate_hk_volatility_index(returns)
+        
+        # 2. 港股资金流向指标
+        if all(col in df.columns for col in ['close', 'volume', 'amount']):
+            # 港股资金净流入（简化版）
+            df['HK_MONEY_FLOW'] = self._calculate_hk_money_flow(df)
+            
+            # 港股大单成交比例
+            df['HK_BLOCK_TRADE_RATIO'] = self._estimate_block_trade_ratio(df)
+        
+        # 3. 港股与A股关联指标（如果是A+H股）
+        df['HK_A_PREMIUM'] = np.nan  # A+H溢价率（需要A股数据对比）
+        
+        # 4. 港股通资金流向（需要额外数据）
+        df['HK_CONNECT_NORTH'] = np.nan  # 北向资金
+        df['HK_CONNECT_SOUTH'] = np.nan  # 南向资金
+        
+        return df
+    
+    def _calculate_hk_volatility_index(self, returns: pd.Series) -> pd.Series:
+        """计算港股波动率指数（模拟）"""
+        # 基于历史波动率的波动率指数
+        hv_20 = returns.rolling(20).std() * np.sqrt(250)
+        hv_60 = returns.rolling(60).std() * np.sqrt(250)
+        
+        # 加权平均
+        vol_index = 0.7 * hv_20 + 0.3 * hv_60
+        
+        # 归一化到0-100范围
+        if vol_index.max() > 0:
+            vol_index = (vol_index / vol_index.rolling(100).max()) * 100
+        
+        return vol_index
+    
+    def _calculate_hk_money_flow(self, df: pd.DataFrame) -> pd.Series:
+        """计算港股资金流向（简化版）"""
+        # 基于价格和成交量的资金流向计算
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        money_flow = typical_price * df['volume']
+        
+        # 资金流正负判断
+        money_flow_positive = money_flow.copy()
+        money_flow_negative = money_flow.copy()
+        
+        # 价格上涨为正资金流，反之为负
+        price_change = df['close'].diff()
+        money_flow_positive[price_change <= 0] = 0
+        money_flow_negative[price_change > 0] = 0
+        
+        # 资金流比率
+        money_flow_ratio = money_flow_positive.rolling(20).sum() / (
+            money_flow_positive.rolling(20).sum() + money_flow_negative.rolling(20).sum()
+        )
+        
+        return money_flow_ratio.fillna(0.5) * 100  # 0-100范围
+    
+    def _estimate_block_trade_ratio(self, df: pd.DataFrame) -> pd.Series:
+        """估计大单成交比例（基于异常成交量）"""
+        # 计算成交量异常值
+        volume_ma = df['volume'].rolling(20).mean()
+        volume_std = df['volume'].rolling(20).std()
+        
+        # 大单定义为超过2倍标准差的成交量
+        block_trade_threshold = volume_ma + 2 * volume_std
+        block_trade_volume = df['volume'].copy()
+        block_trade_volume[df['volume'] < block_trade_threshold] = 0
+        
+        # 大单比例
+        block_trade_ratio = block_trade_volume / df['volume']
+        
+        return block_trade_ratio.fillna(0)
+    
+    def get_hk_market_characteristics(self, data: pd.DataFrame) -> Dict:
+        """
+        获取港股市场特征
+        
+        :param data: 港股数据
+        :return: 市场特征字典
+        """
+        if data.empty:
+            return {}
+        
+        characteristics = {
+            'market_type': '港股',
+            'trading_currency': 'HKD',
+            'data_points': len(data),
+            'price_range': {
+                'min': float(data['close'].min()),
+                'max': float(data['close'].max()),
+                'current': float(data['close'].iloc[-1])
+            },
+            'volatility': {
+                'daily_vol': float(data['close'].pct_change().std()),
+                'annual_vol': float(data['close'].pct_change().std() * np.sqrt(250))
+            },
+            'liquidity': {
+                'avg_volume': float(data['volume'].mean()),
+                'avg_amount': float(data['amount'].mean())
+            }
+        }
+        
+        # 计算港股特有统计
+        if 'HK_HV_20' in data.columns:
+            characteristics['hk_specific'] = {
+                'hv_20': float(data['HK_HV_20'].iloc[-1]),
+                'vol_index': float(data.get('HK_VOL_INDEX', pd.Series([0])).iloc[-1]),
+                'money_flow': float(data.get('HK_MONEY_FLOW', pd.Series([50])).iloc[-1])
+            }
+        
+        return characteristics
+```
+
+### 3. 多市场可视化系统
+
+```python
+class MultiMarketChartRenderer:
+    """
+    多市场图表渲染器
+    支持A股、港股等不同市场的可视化需求
+    """
+    
+    def __init__(self):
+        self.colors = {
+            'hk_primary': '#E74C3C',     # 港股主色（红色）
+            'hk_secondary': '#C0392B',   # 港股辅助色
+            'a_primary': '#2E86AB',      # A股主色（蓝色）
+            'a_secondary': '#1A5276',    # A股辅助色
+            'us_primary': '#27AE60',     # 美股主色（绿色）
+            'index_color': '#8E44AD'     # 指数颜色
+        }
+        
+        self.market_styles = {
+            '港股': {
+                'candle_up': '#E74C3C',  # 上涨颜色
+                'candle_down': '#27AE60', # 下跌颜色
+                'ma_colors': ['#FF6B6B', '#FF8E53', '#FFAA64', '#FFC785']
+            },
+            'A股': {
+                'candle_up': '#E74C3C',
+                'candle_down': '#27AE60',
+                'ma_colors': ['#2E86AB', '#45B7D1', '#73C6B6', '#95A5A6']
+            },
+            '美股': {
+                'candle_up': '#27AE60',
+                'candle_down': '#E74C3C',
+                'ma_colors': ['#27AE60', '#2ECC71', '#58D68D', '#82E0AA']
+            }
+        }
+    
+    def create_hk_stock_chart(self, 
+                            hk_data: pd.DataFrame,
+                            index_data: pd.DataFrame = None,
+                            comparison_data: Dict = None,
+                            save_path: str = 'hk_chart.png') -> plt.Figure:
+        """
+        创建港股专业分析图表
+        
+        :param hk_data: 港股数据
+        :param index_data: 港股指数数据（如恒生指数）
+        :param comparison_data: 对比数据（如A股对标股票）
+        :param save_path: 保存路径
+        :return: Matplotlib Figure对象
+        """
+        fig = plt.figure(figsize=(18, 12))
+        
+        # 创建网格布局
+        gs = gridspec.GridSpec(4, 3, figure=fig, 
+                              height_ratios=[3, 1, 1, 1],
+                              width_ratios=[3, 1, 1])
+        
+        # 1. 港股主图（K线 + 指标）
+        ax_main = fig.add_subplot(gs[0, 0])
+        self._plot_hk_main_chart(ax_main, hk_data)
+        
+        # 2. 港股成交量
+        ax_volume = fig.add_subplot(gs[1, 0], sharex=ax_main)
+        self._plot_hk_volume_chart(ax_volume, hk_data)
+        
+        # 3. 港股技术指标（MACD）
+        ax_macd = fig.add_subplot(gs[2, 0], sharex=ax_main)
+        self._plot_hk_macd_chart(ax_macd, hk_data)
+        
+        # 4. 港股技术指标（RSI）
+        ax_rsi = fig.add_subplot(gs[3, 0], sharex=ax_main)
+        self._plot_hk_rsi_chart(ax_rsi, hk_data)
+        
+        # 5. 港股指数对比（如果有）
+        if index_data is not None:
+            ax_index = fig.add_subplot(gs[0, 1])
+            self._plot_hk_index_chart(ax_index, index_data, hk_data)
+        
+        # 6. 港股特有指标面板
+        ax_hk_panel = fig.add_subplot(gs[0, 2])
+        self._plot_hk_indicator_panel(ax_hk_panel, hk_data)
+        
+        # 7. 多市场对比（如果有）
+        if comparison_data:
+            ax_comparison = fig.add_subplot(gs[1:, 1:])
+            self._plot_market_comparison(ax_comparison, hk_data, comparison_data)
+        
+        plt.suptitle(f"港股技术分析 - {hk_data['symbol'].iloc[0]}", fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        return fig
+    
+    def _plot_hk_main_chart(self, ax, hk_data: pd.DataFrame):
+        """绘制港股主图"""
+        # 使用港股特有的颜色方案
+        style = self.market_styles.get('港股', self.market_styles['A股'])
+        
+        # 绘制K线图
+        mpf.plot(hk_data.tail(100), type='candle', ax=ax, style='yahoo')
+        
+        # 添加均线（港股常用均线）
+        if 'MA10' in hk_data.columns:
+            ax.plot(hk_data.index[-100:], hk_data['MA10'].tail(100), 
+                   color=style['ma_colors'][0], label='MA10', linewidth=1.5)
+        if 'MA20' in hk_data.columns:
+            ax.plot(hk_data.index[-100:], hk_data['MA20'].tail(100), 
+                   color=style['ma_colors'][1], label='MA20', linewidth=1.5)
+        if 'MA50' in hk_data.columns:
+            ax.plot(hk_data.index[-100:], hk_data['MA50'].tail(100), 
+                   color=style['ma_colors'][2], label='MA50', linewidth=1.5)
+        
+        # 布林带
+        if all(col in hk_data.columns for col in ['BB_upper', 'BB_lower']):
+            ax.fill_between(hk_data.index[-100:], 
+                          hk_data['BB_upper'].tail(100), 
+                          hk_data['BB_lower'].tail(100),
+                          alpha=0.2, color='gray', label='Bollinger Bands')
+        
+        ax.set_title('港股价格走势', fontsize=12, fontweight='bold')
+        ax.set_ylabel('价格 (HKD)', fontsize=10)
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        
+        # 添加港股特有标注
+        current_price = hk_data['close'].iloc[-1]
+        ax.annotate(f'当前: {current_price:.2f} HKD', 
+                   xy=(0.02, 0.95), xycoords='axes fraction',
+                   fontsize=9, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    def _plot_hk_volume_chart(self, ax, hk_data: pd.DataFrame):
+        """绘制港股成交量图"""
+        # 港股成交量通常较大，使用对数坐标
+        volume_data = hk_data['volume'].tail(100)
+        
+        # 成交量颜色（涨红跌绿）
+        colors = ['red' if close >= open_ else 'green' 
+                 for close, open_ in zip(hk_data['close'].tail(100), 
+                                        hk_data['open'].tail(100))]
+        
+        ax.bar(hk_data.index[-100:], volume_data, color=colors, alpha=0.7, width=0.8)
+        
+        # 添加成交量均线
+        if 'VOL_MA20' in hk_data.columns:
+            ax.plot(hk_data.index[-100:], hk_data['VOL_MA20'].tail(100), 
+                   color='blue', label='VOL_MA20', linewidth=1.5)
+        
+        ax.set_ylabel('成交量', fontsize=10)
+        ax.legend(loc='upper left', fontsize=8)
+        ax.grid(True, alpha=0.3)
+        
+        # 使用对数坐标（如果成交量变化大）
+        if volume_data.max() / volume_data.min() > 10:
+            ax.set_yscale('log')
+    
+    def _plot_hk_macd_chart(self, ax, hk_data: pd.DataFrame):
+        """绘制港股MACD图"""
+        if all(col in hk_data.columns for col in ['MACD', 'MACD_signal', 'MACD_hist']):
+            ax.plot(hk_data.index[-100:], hk_data['MACD'].tail(100), 
+                   color='blue', label='MACD', linewidth=1.5)
+            ax.plot(hk_data.index[-100:], hk_data['MACD_signal'].tail(100), 
+                   color='red', label='Signal', linewidth=1.5)
+            
+            # MACD柱状图
+            ax.bar(hk_data.index[-100:], hk_data['MACD_hist'].tail(100),
+                  color=['green' if x >= 0 else 'red' 
+                         for x in hk_data['MACD_hist'].tail(100)],
+                  alpha=0.5, width=0.8)
+            
+            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+            ax.set_ylabel('MACD', fontsize=10)
+            ax.legend(loc='upper left', fontsize=8)
+            ax.grid(True, alpha=0.3)
+    
+    def _plot_hk_rsi_chart(self, ax, hk_data: pd.DataFrame):
+        """绘制港股RSI图"""
+        if 'RSI' in hk_data.columns:
+            ax.plot(hk_data.index[-100:], hk_data['RSI'].tail(100), 
+                   color='purple', linewidth=2, label='RSI(14)')
+            
+            ax.axhline(y=70, color='red', linestyle='--', linewidth=1, label='超买')
+            ax.axhline(y=30, color='green', linestyle='--', linewidth=1, label='超卖')
+            ax.fill_between(hk_data.index[-100:], 30, 70, alpha=0.1, color='gray')
+            
+            ax.set_ylabel('RSI', fontsize=10)
+            ax.set_ylim(0, 100)
+            ax.legend(loc='upper left', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlabel('日期', fontsize=10)
+    
+    def _plot_hk_index_chart(self, ax, index_data: pd.DataFrame, hk_data: pd.DataFrame):
+        """绘制港股指数对比图"""
+        # 对齐时间索引
+        common_index = index_data.index.intersection(hk_data.index)
+        
+        if len(common_index) > 0:
+            # 计算相对表现
+            hk_price = hk_data.loc[common_index, 'close']
+            index_price = index_data.loc[common_index, 'close']
+            
+            # 归一化（从100开始）
+            hk_normalized = hk_price / hk_price.iloc[0] * 100
+            index_normalized = index_price / index_price.iloc[0] * 100
+            
+            ax.plot(common_index[-100:], hk_normalized.tail(100), 
+                   color=self.colors['hk_primary'], label=hk_data['symbol'].iloc[0], linewidth=2)
+            ax.plot(common_index[-100:], index_normalized.tail(100), 
+                   color=self.colors['index_color'], label='恒生指数', linewidth=2)
+            
+            ax.set_title('相对恒生指数表现', fontsize=10)
+            ax.set_ylabel('相对表现 (%)', fontsize=9)
+            ax.legend(loc='upper left', fontsize=8)
+            ax.grid(True, alpha=0.3)
+    
+    def _plot_hk_indicator_panel(self, ax, hk_data: pd.DataFrame):
+        """绘制港股特有指标面板"""
+        ax.axis('off')
+        
+        latest = hk_data.iloc[-1]
+        
+        # 港股特有指标
+        indicator_data = []
+        
+        # 基础指标
+        indicator_data.append(["价格 (HKD)", f"{latest['close']:.2f}"])
+        
+        if 'pct_change' in hk_data.columns:
+            pct_change = hk_data['pct_change'].iloc[-1]
+            color_tag = "🔴" if pct_change > 0 else "🟢"
+            indicator_data.append(["日涨跌幅", f"{color_tag} {pct_change:+.2f}%"])
+        
+        # 港股特有指标
+        if 'HK_HV_20' in hk_data.columns:
+            indicator_data.append(["历史波动率", f"{latest['HK_HV_20']:.1f}%"])
+        
+        if 'HK_VOL_INDEX' in hk_data.columns:
+            vol_index = latest['HK_VOL_INDEX']
+            vol_status = "高" if vol_index > 70 else "低" if vol_index < 30 else "中"
+            indicator_data.append(["波动率指数", f"{vol_index:.1f} ({vol_status})"])
+        
+        if 'HK_MONEY_FLOW' in hk_data.columns:
+            money_flow = latest['HK_MONEY_FLOW']
+            flow_status = "流入" if money_flow > 60 else "流出" if money_flow < 40 else "平衡"
+            indicator_data.append(["资金流向", f"{money_flow:.1f} ({flow_status})"])
+        
+        # 成交量相关
+        if 'volume' in hk_data.columns:
+            volume_ratio = latest['volume'] / hk_data['volume'].rolling(20).mean().iloc[-1]
+            volume_status = "放量" if volume_ratio > 1.5 else "缩量" if volume_ratio < 0.5 else "正常"
+            indicator_data.append(["成交量", f"{volume_ratio:.1f}x ({volume_status})"])
+        
+        # 创建表格
+        if indicator_data:
+            table = ax.table(cellText=indicator_data,
+                           cellLoc='left',
+                           loc='center',
+                           colWidths=[0.5, 0.5])
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+            table.scale(1, 2)
+            
+            # 设置样式
+            for i in range(len(indicator_data)):
+                cell = table[i, 0]
+                cell.set_facecolor('#F2F3F4')
+                cell.set_text_props(weight='bold')
+        
+        ax.set_title('港股特有指标', fontsize=11, fontweight='bold', pad=20)
+    
+    def create_multi_market_comparison(self, 
+                                     market_data: Dict[str, pd.DataFrame],
+                                     save_path: str = 'market_comparison.png') -> plt.Figure:
+        """
+        创建多市场对比图
+        
+        :param market_data: 字典 {市场标签: DataFrame}
+        :param save_path: 保存路径
+        :return: Matplotlib Figure对象
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. 价格走势对比（归一化）
+        ax1 = axes[0, 0]
+        self._plot_price_comparison(ax1, market_data)
+        
+        # 2. 波动率对比
+        ax2 = axes[0, 1]
+        self._plot_volatility_comparison(ax2, market_data)
+        
+        # 3. 相关性分析
+        ax3 = axes[1, 0]
+        self._plot_correlation_analysis(ax3, market_data)
+        
+        # 4. 相对强度指标
+        ax4 = axes[1, 1]
+        self._plot_relative_strength(ax4, market_data)
+        
+        plt.suptitle('多市场对比分析', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        return fig
+    
+    def _plot_price_comparison(self, ax, market_data: Dict):
+        """绘制价格走势对比"""
+        for label, data in market_data.items():
+            if data is not None and 'close' in data.columns:
+                # 归一化到100
+                normalized = data['close'] / data['close'].iloc[0] * 100
+                ax.plot(data.index, normalized, label=label, linewidth=2)
+        
+        ax.set_title('价格走势对比 (归一化)', fontsize=12)
+        ax.set_ylabel('相对价格 (%)', fontsize=10)
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3)
+```
+
+### 4. 港股增强版数据准备流水线
+
+```python
+class HKEnhancedDataPipeline:
+    """
+    港股增强版数据准备流水线
+    包含港股特有数据获取、指标计算和可视化
+    """
+    
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.market = '港股'
+        
+        # 初始化各组件
+        self.data_system = UnifiedMarketDataSystem(['akshare', 'yfinance'])
+        self.hk_calculator = HKMarketIndicatorCalculator()
+        self.chart_renderer = MultiMarketChartRenderer()
+        self.validator = DataQualityValidator()
+        
+        self.hk_data = None
+        self.index_data = None
+        self.comparison_data = {}
+        
+    def run_complete_analysis(self,
+                            start_date: str = '2025-01-01',
+                            end_date: str = '2026-01-26',
+                            include_index: bool = True,
+                            include_comparison: List[str] = None) -> Dict:
+        """
+        运行完整的港股分析流程
+        
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :param include_index: 是否包含港股指数
+        :param include_comparison: 对比股票列表
+        :return: 分析结果字典
+        """
+        print("="*60)
+        print(f"开始港股分析: {self.symbol}")
+        print("="*60)
+        
+        result = {
+            'symbol': self.symbol,
+            'market': self.market,
+            'analysis_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        try:
+            # 1. 获取港股数据
+            print("1. 获取港股数据...")
+            self._fetch_hk_data(start_date, end_date)
+            
+            # 2. 获取港股指数数据
+            if include_index:
+                print("2. 获取港股指数数据...")
+                self._fetch_hk_index_data(start_date, end_date)
+            
+            # 3. 获取对比数据
+            if include_comparison:
+                print("3. 获取对比数据...")
+                self._fetch_comparison_data(include_comparison, start_date, end_date)
+            
+            # 4. 验证数据质量
+            print("4. 验证数据质量...")
+            quality_report = self._validate_hk_data()
+            result['quality_report'] = quality_report
+            
+            # 5. 计算技术指标
+            print("5. 计算港股技术指标...")
+            indicators_data = self._calculate_hk_indicators()
+            result.update(indicators_data)
+            
+            # 6. 分析市场特征
+            print("6. 分析港股市场特征...")
+            market_characteristics = self._analyze_hk_market()
+            result['market_characteristics'] = market_characteristics
+            
+            # 7. 生成港股图表
+            print("7. 生成港股分析图表...")
+            charts = self._generate_hk_charts()
+            result['charts'] = charts
+            
+            # 8. 准备AI分析数据
+            print("8. 准备AI分析数据...")
+            ai_data = self._prepare_hk_ai_data(result)
+            result['ai_data'] = ai_data
+            
+            print("\n" + "="*60)
+            print("港股分析完成!")
+            print(f"数据点数: {len(self.hk_data) if self.hk_data is not None else 0}")
+            print(f"数据质量: {quality_report.get('status', 'UNKNOWN')}")
+            print(f"生成图表: {len(charts)}张")
+            print("="*60)
+            
+            return result
+            
+        except Exception as e:
+            print(f"港股分析失败: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def _fetch_hk_data(self, start_date: str, end_date: str):
+        """获取港股数据"""
+        self.hk_data = self.data_system.get_market_data(
+            symbol=self.symbol,
+            market=self.market,
+            start_date=start_date,
+            end_date=end_date,
+            data_type='daily'
+        )
+        
+        if self.hk_data is None or self.hk_data.empty:
+            raise ValueError(f"无法获取港股 {self.symbol} 的数据")
+        
+        print(f"获取港股数据成功: {len(self.hk_data)} 条记录")
+        print(f"日期范围: {self.hk_data.index[0]} 至 {self.hk_data.index[-1]}")
+    
+    def _fetch_hk_index_data(self, start_date: str, end_date: str):
+        """获取港股指数数据"""
+        # 获取恒生指数作为基准
+        self.index_data = self.data_system.get_hk_index_data(
+            index_code='HSI',
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        if self.index_data is not None:
+            print(f"获取恒生指数数据成功: {len(self.index_data)} 条记录")
+    
+    def _fetch_comparison_data(self, symbols: List[str], start_date: str, end_date: str):
+        """获取对比数据"""
+        for symbol in symbols:
+            try:
+                data = self.data_system.get_market_data(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    data_type='daily'
+                )
+                
+                if data is not None:
+                    self.comparison_data[symbol] = data
+                    print(f"获取对比数据 {symbol} 成功")
+                    
+            except Exception as e:
+                print(f"获取对比数据 {symbol} 失败: {e}")
+    
+    def _validate_hk_data(self) -> Dict:
+        """验证港股数据质量"""
+        if self.hk_data is None:
+            return {'status': 'FAIL', 'message': '没有数据'}
+        
+        # 基础验证
+        base_report = self.validator.validate_ohlcv(self.hk_data)
+        
+        # 港股特有验证
+        hk_report = {
+            'status': base_report['status'],
+            'completeness': base_report['completeness'],
+            'data_points': len(self.hk_data),
+            'price_range': {
+                'min': float(self.hk_data['low'].min()),
+                'max': float(self.hk_data['high'].max()),
+                'current': float(self.hk_data['close'].iloc[-1])
+            },
+            'volume_analysis': {
+                'avg_volume': float(self.hk_data['volume'].mean()),
+                'max_volume': float(self.hk_data['volume'].max()),
+                'recent_volume': float(self.hk_data['volume'].tail(5).mean())
+            },
+            'hk_specific_checks': self._perform_hk_specific_checks()
+        }
+        
+        return hk_report
+    
+    def _perform_hk_specific_checks(self) -> Dict:
+        """执行港股特有检查"""
+        checks = {
+            'price_gaps': 0,
+            'volume_anomalies': 0,
+            'trading_days_check': 'PASS'
+        }
+        
+        if self.hk_data is not None:
+            # 检查价格缺口
+            price_gaps = abs(self.hk_data['close'].pct_change()) > 0.1  # 10%以上的缺口
+            checks['price_gaps'] = int(price_gaps.sum())
+            
+            # 检查成交量异常
+            volume_mean = self.hk_data['volume'].mean()
+            volume_std = self.hk_data['volume'].std()
+            volume_anomalies = abs(self.hk_data['volume'] - volume_mean) > 3 * volume_std
+            checks['volume_anomalies'] = int(volume_anomalies.sum())
+            
+            # 检查交易日数量（港股每年约250个交易日）
+            date_range = (self.hk_data.index[-1] - self.hk_data.index[0]).days
+            expected_days = date_range * 250 / 365
+            actual_days = len(self.hk_data)
+            
+            if abs(actual_days - expected_days) / expected_days > 0.2:
+                checks['trading_days_check'] = 'WARNING'
+        
+        return checks
+    
+    def _calculate_hk_indicators(self) -> Dict:
+        """计算港股技术指标"""
+        if self.hk_data is None:
+            return {}
+        
+        # 计算港股专用指标
+        hk_with_indicators = self.hk_calculator.calculate_hk_indicators(self.hk_data)
+        self.hk_data = hk_with_indicators
+        
+        latest = self.hk_data.iloc[-1]
+        
+        result = {
+            'technical_indicators': {
+                'trend_indicators': {
+                    'MA10': float(latest.get('MA10', 0)),
+                    'MA20': float(latest.get('MA20', 0)),
+                    'MA50': float(latest.get('MA50', 0)),
+                    'MACD': float(latest.get('MACD', 0)),
+                    'MACD_signal': float(latest.get('MACD_signal', 0))
+                },
+                'momentum_indicators': {
+                    'RSI': float(latest.get('RSI', 0)),
+                    'RSI_status': 'OVERBOUGHT' if latest.get('RSI', 0) > 70 else 
+                                 'OVERSOLD' if latest.get('RSI', 0) < 30 else 'NEUTRAL',
+                    'STOCH_K': float(latest.get('STOCH_K', 0)),
+                    'STOCH_D': float(latest.get('STOCH_D', 0))
+                },
+                'hk_specific_indicators': {
+                    'HV_20': float(latest.get('HK_HV_20', 0)),
+                    'VOL_INDEX': float(latest.get('HK_VOL_INDEX', 0)),
+                    'MONEY_FLOW': float(latest.get('HK_MONEY_FLOW', 0))
+                }
+            },
+            'price_data': self._extract_price_history(),
+            'volume_analysis': self._analyze_volume_patterns()
+        }
+        
+        return result
+    
+    def _extract_price_history(self) -> List[Dict]:
+        """提取价格历史数据"""
+        if self.hk_data is None:
+            return []
+        
+        price_history = []
+        for idx, row in self.hk_data.tail(50).iterrows():
+            price_history.append({
+                'date': idx.strftime('%Y-%m-%d'),
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume']),
+                'pct_change': float(row.get('pct_change', 0))
+            })
+        
+        return price_history
+    
+    def _analyze_volume_patterns(self) -> Dict:
+        """分析成交量模式"""
+        if self.hk_data is None:
+            return {}
+        
+        volume_data = self.hk_data['volume']
+        
+        analysis = {
+            'recent_avg': float(volume_data.tail(20).mean()),
+            'historical_avg': float(volume_data.mean()),
+            'volume_ratio': float(volume_data.tail(20).mean() / volume_data.mean()),
+            'volume_trend': self._determine_volume_trend(volume_data),
+            'unusual_volume_days': int((volume_data > volume_data.rolling(20).mean() * 1.5).sum())
+        }
+        
+        return analysis
+    
+    def _determine_volume_trend(self, volume_series: pd.Series) -> str:
+        """判断成交量趋势"""
+        recent_mean = volume_series.tail(5).mean()
+        prev_mean = volume_series.tail(10).head(5).mean()
+        
+        if recent_mean > prev_mean * 1.2:
+            return 'INCREASING'
+        elif recent_mean < prev_mean * 0.8:
+            return 'DECREASING'
+        else:
+            return 'STABLE'
+    
+    def _analyze_hk_market(self) -> Dict:
+        """分析港股市场特征"""
+        if self.hk_data is None:
+            return {}
+        
+        return self.hk_calculator.get_hk_market_characteristics(self.hk_data)
+    
+    def _generate_hk_charts(self) -> Dict:
+        """生成港股图表"""
+        charts = {}
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        try:
+            # 1. 港股主分析图
+            main_chart_path = f"hk_main_chart_{timestamp}.png"
+            self.chart_renderer.create_hk_stock_chart(
+                hk_data=self.hk_data,
+                index_data=self.index_data,
+                comparison_data=self.comparison_data,
+                save_path=main_chart_path
+            )
+            charts['main_chart'] = main_chart_path
+            
+            # 2. 多市场对比图（如果有对比数据）
+            if self.comparison_data:
+                comparison_chart_path = f"hk_comparison_chart_{timestamp}.png"
+                
+                # 创建包含港股和对比数据的数据集
+                all_market_data = {self.symbol: self.hk_data}
+                all_market_data.update(self.comparison_data)
+                
+                self.chart_renderer.create_multi_market_comparison(
+                    market_data=all_market_data,
+                    save_path=comparison_chart_path
+                )
+                charts['comparison_chart'] = comparison_chart_path
+            
+            # 3. 港股指标趋势图
+            indicator_chart_path = f"hk_indicator_chart_{timestamp}.png"
+            self._create_hk_indicator_trend_chart(indicator_chart_path)
+            charts['indicator_chart'] = indicator_chart_path
+            
+        except Exception as e:
+            print(f"生成图表失败: {e}")
+        
+        return charts
+    
+    def _create_hk_indicator_trend_chart(self, save_path: str):
+        """创建港股指标趋势图"""
+        if self.hk_data is None:
+            return
+        
+        fig, axes = plt.subplots(3, 1, figsize=(15, 10))
+        
+        # 1. 波动率趋势
+        if 'HK_HV_20' in self.hk_data.columns:
+            axes[0].plot(self.hk_data.index[-100:], self.hk_data['HK_HV_20'].tail(100),
+                       color='orange', linewidth=2)
+            axes[0].set_title('港股历史波动率 (20日)', fontsize=12)
+            axes[0].set_ylabel('波动率 (%)', fontsize=10)
+            axes[0].grid(True, alpha=0.3)
+        
+        # 2. 资金流向趋势
+        if 'HK_MONEY_FLOW' in self.hk_data.columns:
+            axes[1].plot(self.hk_data.index[-100:], self.hk_data['HK_MONEY_FLOW'].tail(100),
+                       color='blue', linewidth=2)
+            axes[1].axhline(y=50, color='gray', linestyle='--', alpha=0.5)
+            axes[1].set_title('港股资金流向指标', fontsize=12)
+            axes[1].set_ylabel('资金流向 (%)', fontsize=10)
+            axes[1].set_ylim(0, 100)
+            axes[1].grid(True, alpha=0.3)
+        
+        # 3. 成交量与价格对比
+        if 'close' in self.hk_data.columns and 'volume' in self.hk_data.columns:
+            ax2 = axes[2].twinx()
+            
+            # 价格
+            axes[2].plot(self.hk_data.index[-100:], self.hk_data['close'].tail(100),
+                        color='green', linewidth=2, label='价格')
+            axes[2].set_ylabel('价格 (HKD)', fontsize=10, color='green')
+            axes[2].tick_params(axis='y', labelcolor='green')
+            
+            # 成交量
+            volume_normalized = self.hk_data['volume'].tail(100) / self.hk_data['volume'].tail(100).max() * 100
+            ax2.bar(self.hk_data.index[-100:], volume_normalized,
+                   alpha=0.3, color='gray', label='成交量')
+            ax2.set_ylabel('成交量 (%)', fontsize=10, color='gray')
+            ax2.tick_params(axis='y', labelcolor='gray')
+            
+            axes[2].set_title('港股价格与成交量对比', fontsize=12)
+            axes[2].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _prepare_hk_ai_data(self, analysis_result: Dict) -> Dict:
+        """准备港股AI分析数据"""
+        ai_data = {
+            'metadata': {
+                'symbol': self.symbol,
+                'market': self.market,
+                'analysis_date': analysis_result['analysis_time'],
+                'data_points': len(self.hk_data) if self.hk_data is not None else 0
+            },
+            'current_status': {
+                'price': analysis_result.get('market_characteristics', {}).get('price_range', {}).get('current', 0),
+                'volume': analysis_result.get('volume_analysis', {}).get('recent_avg', 0),
+                'market_trend': self._determine_market_trend()
+            },
+            'technical_signals': analysis_result.get('technical_indicators', {}),
+            'hk_specific_analysis': {
+                'volatility': analysis_result.get('market_characteristics', {}).get('volatility', {}),
+                'liquidity': analysis_result.get('market_characteristics', {}).get('liquidity', {}),
+                'hk_indicators': analysis_result.get('technical_indicators', {}).get('hk_specific_indicators', {})
+            },
+            'comparison_data': self._prepare_comparison_summary()
+        }
+        
+        # 保存为JSON
+        json_path = f"hk_ai_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(ai_data, f, ensure_ascii=False, indent=2)
+        
+        ai_data['json_path'] = json_path
+        return ai_data
+    
+    def _determine_market_trend(self) -> str:
+        """判断市场趋势"""
+        if self.hk_data is None or len(self.hk_data) < 20:
+            return 'UNKNOWN'
+        
+        # 使用多个指标判断趋势
+        close_prices = self.hk_data['close']
+        
+        # 短期趋势（5日）
+        short_trend = 'UP' if close_prices.iloc[-1] > close_prices.iloc[-5] else 'DOWN'
+        
+        # 中期趋势（20日）
+        ma20 = close_prices.rolling(20).mean()
+        mid_trend = 'UP' if close_prices.iloc[-1] > ma20.iloc[-1] else 'DOWN'
+        
+        # 综合判断
+        if short_trend == 'UP' and mid_trend == 'UP':
+            return 'STRONG_UP'
+        elif short_trend == 'DOWN' and mid_trend == 'DOWN':
+            return 'STRONG_DOWN'
+        elif short_trend == 'UP':
+            return 'UP'
+        elif short_trend == 'DOWN':
+            return 'DOWN'
+        else:
+            return 'SIDEWAYS'
+    
+    def _prepare_comparison_summary(self) -> Dict:
+        """准备对比数据摘要"""
+        summary = {}
+        
+        for symbol, data in self.comparison_data.items():
+            if data is not None and not data.empty:
+                latest = data.iloc[-1]
+                summary[symbol] = {
+                    'price': float(latest['close']),
+                    'pct_change': float(data['close'].pct_change().iloc[-1] * 100),
+                    'volume': float(latest['volume'])
+                }
+        
+        return summary
+```
+
+### 5. 多市场分析系统集成
+
+```python
+class MultiMarketAnalysisSystem:
+    """
+    多市场分析系统
+    统一管理A股、港股分析
+    """
+    
+    def __init__(self):
+        self.data_system = UnifiedMarketDataSystem()
+        self.market_pipelines = {}
+        
+        # 注册不同市场的分析流水线
+        self.pipeline_classes = {
+            '港股': HKEnhancedDataPipeline,
+            'A股': CompleteDataPreparationPipeline  # 之前定义的A股流水线
+        }
+    
+    def analyze_stock(self, 
+                     symbol: str, 
+                     market: str = None,
+                     start_date: str = '2025-01-01',
+                     end_date: str = '2026-01-26',
+                     **kwargs) -> Dict:
+        """
+        分析指定股票
+        
+        :param symbol: 股票代码
+        :param market: 市场类型
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :param kwargs: 其他参数传递给流水线
+        :return: 分析结果
+        """
+        # 自动检测市场
+        if market is None:
+            market = self.data_system.detect_market(symbol)
+        
+        print(f"开始分析 {market} 股票: {symbol}")
+        
+        # 获取对应的流水线
+        pipeline_class = self.pipeline_classes.get(market)
+        if pipeline_class is None:
+            raise ValueError(f"不支持的市场类型: {market}")
+        
+        # 创建并运行流水线
+        pipeline = pipeline_class(symbol)
+        result = pipeline.run_complete_analysis(
+            start_date=start_date,
+            end_date=end_date,
+            **kwargs
+        )
+        
+        # 存储结果
+        self.market_pipelines[symbol] = pipeline
+        
+        return result
+    
+    def analyze_multiple_stocks(self, 
+                              stock_list: List[Tuple[str, str]],
+                              start_date: str,
+                              end_date: str) -> Dict:
+        """
+        批量分析多只股票
+        
+        :param stock_list: 股票列表 [(代码, 市场), ...]
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :return: 分析结果字典
+        """
+        results = {}
+        
+        for symbol, market in stock_list:
+            try:
+                result = self.analyze_stock(
+                    symbol=symbol,
+                    market=market,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                results[symbol] = result
+                
+            except Exception as e:
+                print(f"分析 {symbol} 失败: {e}")
+                results[symbol] = {'error': str(e)}
+        
+        return results
+    
+    def compare_markets(self, 
+                       hk_symbols: List[str],
+                       a_symbols: List[str],
+                       start_date: str,
+                       end_date: str) -> Dict:
+        """
+        对比港股和A股市场
+        
+        :param hk_symbols: 港股代码列表
+        :param a_symbols: A股代码列表
+        :param start_date: 开始日期
+        :param end_date: 结束日期
+        :return: 对比分析结果
+        """
+        # 分析所有股票
+        all_stocks = [(s, '港股') for s in hk_symbols] + [(s, 'A股') for s in a_symbols]
+        
+        results = self.analyze_multiple_stocks(all_stocks, start_date, end_date)
+        
+        # 生成对比报告
+        comparison_report = self._generate_market_comparison_report(results)
+        
+        return {
+            'individual_results': results,
+            'comparison_report': comparison_report
+        }
+    
+    def _generate_market_comparison_report(self, results: Dict) -> Dict:
+        """生成市场对比报告"""
+        report = {
+            '港股': {'count': 0, 'avg_volatility': 0, 'avg_return': 0, 'stocks': []},
+            'A股': {'count': 0, 'avg_volatility': 0, 'avg_return': 0, 'stocks': []}
+        }
+        
+        hk_volatilities = []
+        hk_returns = []
+        a_volatilities = []
+        a_returns = []
+        
+        for symbol, result in results.items():
+            if 'error' in result:
+                continue
+            
+            market = result.get('market', '未知')
+            
+            if market in report:
+                report[market]['count'] += 1
+                report[market]['stocks'].append(symbol)
+                
+                # 收集波动率和收益率数据
+                volatility = result.get('market_characteristics', {}).get('volatility', {}).get('daily_vol', 0)
+                returns = result.get('price_data', [{}])[-1].get('pct_change', 0) if result.get('price_data') else 0
+                
+                if market == '港股':
+                    hk_volatilities.append(volatility)
+                    hk_returns.append(returns)
+                elif market == 'A股':
+                    a_volatilities.append(volatility)
+                    a_returns.append(returns)
+        
+        # 计算平均值
+        if hk_volatilities:
+            report['港股']['avg_volatility'] = np.mean(hk_volatilities)
+            report['港股']['avg_return'] = np.mean(hk_returns)
+        
+        if a_volatilities:
+            report['A股']['avg_volatility'] = np.mean(a_volatilities)
+            report['A股']['avg_return'] = np.mean(a_returns)
+        
+        return report
+```
+
+### 6. 使用示例
+
+```python
+# 港股分析使用示例
+def example_hk_analysis():
+    """港股分析示例"""
+    
+    # 1. 分析单只港股
+    print("示例1: 分析单只港股")
+    hk_pipeline = HKEnhancedDataPipeline(symbol="00700")  # 腾讯控股
+    
+    result = hk_pipeline.run_complete_analysis(
+        start_date="2025-06-01",
+        end_date="2026-01-26",
+        include_index=True,
+        include_comparison=["09988", "03690"]  # 阿里巴巴、美团
+    )
+    
+    print(f"分析完成!")
+    print(f"- 最新价格: {result['market_characteristics']['price_range']['current']:.2f} HKD")
+    print(f"- 波动率: {result['market_characteristics']['volatility']['daily_vol']:.4f}")
+    print(f"- 生成图表: {len(result['charts'])} 张")
+    
+    # 2. 使用多市场系统
+    print("\n示例2: 使用多市场系统")
+    market_system = MultiMarketAnalysisSystem()
+    
+    # 分析港股和A股
+    stocks_to_analyze = [
+        ("00700", "港股"),  # 腾讯
+        ("09988", "港股"),  # 阿里巴巴
+        ("sh688630", "A股")  # 芯碁微装
+    ]
+    
+    results = market_system.analyze_multiple_stocks(
+        stock_list=stocks_to_analyze,
+        start_date="2025-06-01",
+        end_date="2026-01-26"
+    )
+    
+    for symbol, result in results.items():
+        if 'error' not in result:
+            print(f"{symbol}: {result.get('market', '未知')} 分析完成")
+    
+    # 3. 市场对比
+    print("\n示例3: 市场对比分析")
+    comparison = market_system.compare_markets(
+        hk_symbols=["00700", "09988"],
+        a_symbols=["sh688630", "sh600519"],
+        start_date="2025-06-01",
+        end_date="2026-01-26"
+    )
+    
+    print("市场对比结果:")
+    for market, data in comparison['comparison_report'].items():
+        if data['count'] > 0:
+            print(f"  {market}: {data['count']}只股票")
+            print(f"    平均波动率: {data['avg_volatility']:.4f}")
+            print(f"    平均收益率: {data['avg_return']:.2f}%")
+
+# 运行示例
+if __name__ == "__main__":
+    example_hk_analysis()
+```
+
+## 七、港股数据特点与注意事项
+
+### 1. **港股特有特征**
+- **交易时间**: 09:30-12:00, 13:00-16:00（比A股多1小时）
+- **交易货币**: 港币（HKD）
+- **涨跌幅限制**: 无涨跌幅限制（但市场波动调节机制）
+- **交易单位**: "手"（但每手股数不同）
+- **市场参与者**: 国际投资者比例高
+
+### 2. **数据获取建议**
+- **主数据源**: AKShare（免费，覆盖全面）
+- **备用数据源**: Yahoo Finance（实时性好）
+- **专业数据源**: Tushare Pro（需付费，数据质量高）
+
+### 3. **港股特有指标**
+- **港股通资金流**: 北向/南向资金
+- **卖空数据**: 港股有完善的卖空机制
+- **大额成交**: 港股大单交易更常见
+- **国际关联**: 受美股、A股影响大
+
+### 4. **技术分析调整**
+- **波动率计算**: 使用250个交易日（港股年交易日）
+- **流动性考量**: 港股流动性差异大
+- **国际因素**: 考虑时区差异和国际事件影响
+
+## 八、完整港股分析报告内容
+
+### 生成的报告包括：
+1. **港股专用图表**
+   - 港股价格走势图（含港币计价）
+   - 恒生指数对比图
+   - 港股特有指标面板
+   - 多市场对比分析
+
+2. **港股特有数据**
+   - 港股波动率分析
+   - 资金流向指标
+   - 大单成交分析
+   - 市场特征统计
+
+3. **AI分析数据**
+   - 结构化港股数据
+   - 市场特征摘要
+   - 对比分析结果
+   - 风险提示
+
+这个系统现在完全支持港股数据分析，并与A股系统无缝集成。您可以使用相同的流程分析A股和港股，系统会自动识别市场类型并应用相应的分析方法。

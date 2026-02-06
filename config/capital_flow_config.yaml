@@ -1,0 +1,46 @@
+capital_flow:
+  data_sources:
+    real_time_source: "akshare"
+    historical_source: "tushare"
+    backup_source: "yfinance"
+
+  analysis:
+    main_force_threshold: 500000
+    flow_periods: [1, 5, 20, 60]
+    anomaly_detection:
+      enabled: true
+      threshold_std: 2.5
+    sentiment:
+      calculation_method: "composite"
+      weights:
+        main_force: 0.4
+        retail: 0.3
+        institution: 0.3
+      thresholds:
+        extreme_bullish: 80
+        bullish: 60
+        neutral: 40
+        bearish: 20
+        extreme_bearish: 0
+
+  margin_trading:
+    enabled: true
+    warning_thresholds:
+      margin_balance_ratio: 0.05
+      short_selling_ratio: 0.03
+
+  visualization:
+    chart_colors:
+      inflow: "#27AE60"
+      outflow: "#E74C3C"
+      main_force: "#3498DB"
+      retail: "#F39C12"
+    chart_sizes:
+      flow_comparison: [12, 8]
+      sentiment_radar: [10, 10]
+      heatmap: [14, 10]
+
+  report:
+    section_order: 3
+    include_charts: 3
+    signal_generation: true
